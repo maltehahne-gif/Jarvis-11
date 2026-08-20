@@ -51,3 +51,15 @@ class CoreConfig:
 
     def data_dir(self) -> Path:
         return Path(self.db_path).parent
+
+    @property
+    def offline(self) -> bool:
+        """True when no cloud provider is configured.
+
+        Derived rather than configured separately: the rule-based provider is
+        the local one (Blueprint 6.1's "Offline / private Basics" row), so
+        running on it *is* running offline. Two independent switches could
+        disagree, and the disagreement would route private data to a cloud
+        that is not actually there.
+        """
+        return self.provider == "rules"

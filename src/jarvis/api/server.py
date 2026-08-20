@@ -17,6 +17,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from jarvis.config import CoreConfig
 from jarvis.core import JarvisCore
+from jarvis.memory.models import MemoryType
 from jarvis.permission.policy import Confirmation
 
 log = logging.getLogger(__name__)
@@ -45,6 +47,41 @@ class ApprovalRequest(BaseModel):
     fingerprint: str
     device_id: str | None = None
     strong: bool = False
+
+
+class CorrectionRequest(BaseModel):
+    """Blueprint 8.4's "Correct"."""
+
+    value: Any
+
+
+class DontLearnRequest(BaseModel):
+    """Blueprint 8.4's "Don't Learn This". `*` blocks the whole subject."""
+
+    subject: str
+    predicate: str = "*"
+
+
+class ForgetWindowRequest(BaseModel):
+    """ "Jarvis, vergiss die letzten 30 Minuten"."""
+
+    minutes: int = Field(default=30, ge=1, le=60 * 24 * 7)
+
+
+class PrivacyRequest(BaseModel):
+    """The three independent switches from Blueprint 8.4.
+
+    `None` leaves a switch untouched, so a caller can flip one without having
+    to restate the other two.
+    """
+
+    learn_behaviour: bool | None = None
+    conversation_memory: bool | None = None
+    screen_camera_learning: bool | None = None
+
+
+class RoutineDecisionRequest(BaseModel):
+    approve: bool
 
 
 def create_app(core: JarvisCore | None = None, config: CoreConfig | None = None) -> FastAPI:
@@ -140,6 +177,80 @@ def create_app(core: JarvisCore | None = None, config: CoreConfig | None = None)
     @app.get("/routing")
     async def routing() -> dict[str, Any]:
         return core.model_router.table()
+
+    # -- "What JARVIS Knows" (Blueprint 8.4) -------------------------------
+
+    @app.get("/memory")
+    async def memory(type: str | None = None, limit: int = 200) -> dict[str, Any]:
+        return {
+            "summary": await core.memory.snapshot(),
+            "entries": await core.memory_control.what_jarvis_knows(
+                type=MemoryType(type) if type else None, limit=limit
+            ),
+        }
+
+    @app.get("/memory/search")
+    async def memory_search(q: str, limit: int = 10) -> list[dict[str, Any]]:
+        return [s.to_dict() for s in await core.memory.recall(q, limit=limit)]
+
+    @app.post("/memory/{memory_id}/correct")
+    async def memory_correct(memory_id: str, request: CorrectionRequest) -> dict[str, Any]:
+        entry = await core.memory_control.correct(memory_id, request.value)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="memory not found")
+        return entry.to_dict()
+
+    @app.post("/memory/{memory_id}/forget")
+    async def memory_forget(memory_id: str) -> dict[str, Any]:
+        return (await core.memory_control.forget(memory_id)).to_dict()
+
+    @app.post("/memory/{memory_id}/pin")
+    async def memory_pin(memory_id: str) -> dict[str, Any]:
+        entry = await core.memory_control.pin(memory_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="memory not found")
+        return entry.to_dict()
+
+    @app.post("/memory/{memory_id}/make-temporary")
+    async def memory_make_temporary(memory_id: str, hours: float = 1.0) -> dict[str, Any]:
+        entry = await core.memory_control.make_temporary(memory_id, timedelta(hours=hours))
+        if entry is None:
+            raise HTTPException(status_code=404, detail="memory not found")
+        return entry.to_dict()
+
+    @app.post("/memory/dont-learn")
+    async def memory_dont_learn(request: DontLearnRequest) -> dict[str, Any]:
+        receipt = await core.memory_control.dont_learn_this(request.subject, request.predicate)
+        return receipt.to_dict()
+
+    @app.post("/memory/forget-window")
+    async def memory_forget_window(request: ForgetWindowRequest) -> dict[str, Any]:
+        return (await core.memory_control.forget_window(request.minutes)).to_dict()
+
+    @app.get("/memory/privacy")
+    async def memory_privacy() -> dict[str, Any]:
+        return core.memory.privacy.settings.to_dict()
+
+    @app.post("/memory/privacy")
+    async def memory_set_privacy(request: PrivacyRequest) -> dict[str, Any]:
+        return await core.memory_control.set_privacy(
+            learn_behaviour=request.learn_behaviour,
+            conversation_memory=request.conversation_memory,
+            screen_camera_learning=request.screen_camera_learning,
+        )
+
+    @app.get("/memory/routines")
+    async def memory_routines() -> list[dict[str, Any]]:
+        return await core.memory_control.pending_routines()
+
+    @app.post("/memory/routines/{proposal_id}")
+    async def memory_decide_routine(
+        proposal_id: str, request: RoutineDecisionRequest
+    ) -> dict[str, Any]:
+        decided = await core.memory_control.decide_routine(proposal_id, approve=request.approve)
+        if decided is None:
+            raise HTTPException(status_code=404, detail="proposal not found")
+        return decided
 
     # -- live event stream --------------------------------------------------
 

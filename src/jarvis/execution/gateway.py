@@ -422,6 +422,11 @@ class ExecutionGateway:
                     "capability": capability.name,
                     "mission_id": context.mission_id,
                     "verification": str(report.status),
+                    # Memory is a named Event Bus consumer (Blueprint 5.1) and
+                    # needs the arguments to tell one habit from another:
+                    # "Licht im Office an" is not the same routine as
+                    # "Licht im Schlafzimmer an".
+                    "params": params,
                 },
             )
         )

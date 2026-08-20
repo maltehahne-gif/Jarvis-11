@@ -30,19 +30,22 @@ from jarvis.audit.logger import AuditLogger
 from jarvis.capability.models import ExecutionContext
 from jarvis.capability.registry import CapabilityRegistry
 from jarvis.config import CoreConfig
+from jarvis.context.builder import ContextBuilder, Destination
 from jarvis.events import types as ev
 from jarvis.events.bus import EventBus
 from jarvis.events.envelope import Event, Priority, new_id
 from jarvis.execution.budget import BudgetTracker
 from jarvis.execution.gateway import ExecutionGateway, ExecutionOutcome, ExecutionResult
 from jarvis.intent.router import ControlAction, Intent, IntentRouter, Route
+from jarvis.memory.control import MemoryControl
+from jarvis.memory.service import MemoryService
 from jarvis.mission.engine import MissionEngine
 from jarvis.mission.model import Mission, MissionState, Task, TaskState
 from jarvis.permission.engine import PermissionEngine
 from jarvis.permission.policy import Confirmation, Policy
 from jarvis.persistence.ports import Store
 from jarvis.persistence.sqlite_store import SqliteStore
-from jarvis.routing.model_router import ModelRouter
+from jarvis.routing.model_router import ModelRouter, TaskClass
 from jarvis.state.manager import StateManager
 from jarvis.tools.mock import MockWorld, register_mock_tools
 from jarvis.verify.verifier import Verifier
@@ -112,6 +115,14 @@ class JarvisCore:
         self.state = StateManager(self.store)
         self.router = IntentRouter(self.registry)
         self.model_router = ModelRouter()
+
+        # Memory subscribes to the Bus rather than being called from the
+        # command path - Blueprint 5.1 lists Memory among the Bus's consumers.
+        self.memory = MemoryService(store=self.store, state_store=self.store, audit=self.audit)
+        self.memory.attach_to_bus(self.bus)
+        self.memory_control = MemoryControl(self.memory, audit=self.audit, bus=self.bus)
+        self.context = ContextBuilder(self.memory)
+
         self.coordinator = AgentCoordinator(
             provider=provider or build_provider(self.config.provider),
             gateway=self.gateway,
@@ -131,6 +142,10 @@ class JarvisCore:
             return []
         await self.store.open()
         await self.state.load()
+        # Privacy settings must survive a restart: a system that forgets the
+        # owner switched learning off would start learning again on its own.
+        await self.memory.load()
+        await self.memory.purge_expired()
         resumed = await self.missions.resume_open_missions()
         self._started = True
         log.info("core started; %d mission(s) resumed", len(resumed))
@@ -307,7 +322,18 @@ class JarvisCore:
             actor="agent-coordinator",
             grants=grants,
         )
-        run = await self.coordinator.run(intent.text, context)
+
+        # Assemble only the relevant context, and only what may travel to
+        # where this request is going (Blueprint 5.1 Context Builder).
+        routing = self.model_router.route(TaskClass.FEATURE, offline=self.config.offline)
+        built = await self.context.build(
+            intent.text,
+            destination=Destination.for_provider(routing.provider),
+            state=self.state.snapshot(),
+        )
+        run = await self.coordinator.run(
+            intent.text, context, offline=self.config.offline, extra_context=built.to_dict()
+        )
 
         for execution in run.executions:
             mission.add_task(

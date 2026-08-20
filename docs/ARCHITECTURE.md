@@ -30,9 +30,10 @@ modularer Monolith).
 |---|---|---|
 | State Manager | `src/jarvis/state/manager.py` | Geräte, Missionen, Präsenz, Working Memory |
 | Intent Router | `src/jarvis/intent/router.py` | vollständig, deterministisch |
-| Context Builder | — | **fehlt**, braucht Memory (Blueprint 8, spätere Phase) |
+| Context Builder | `src/jarvis/context/builder.py` | vollständig, mit Sensitivity-Filterung |
 | Mission Engine | `src/jarvis/mission/engine.py` | vollständig inkl. State Machine 5.3 |
-| Planner | — | **fehlt**, in 0.1 plant der Provider einen Schritt pro Turn |
+| Memory | `src/jarvis/memory/` | vollständig, Blueprint 8 (siehe Abschnitt 8) |
+| Planner | — | **fehlt**, aktuell plant der Provider einen Schritt pro Turn |
 | Agent Coordinator | `src/jarvis/agents/coordinator.py` | vollständig inkl. Loop-Kontrolle |
 | Capability Registry | `src/jarvis/capability/registry.py` | vollständig |
 | Permission Engine | `src/jarvis/permission/engine.py` | vollständig, P0–P6 |
@@ -43,9 +44,9 @@ modularer Monolith).
 | Model Router | `src/jarvis/routing/model_router.py` | Tabelle aus Blueprint 6.1 |
 | Audit Logger | `src/jarvis/audit/logger.py` | vollständig, hash-verkettet |
 
-Die fehlenden drei Module sind nicht vergessen, sondern außerhalb der Exit-
-Kriterien von 5.4. Sie brauchen jeweils etwas, das es in 0.1 noch nicht gibt
-(Memory, echte Mehrschritt-Pläne, Background Jobs).
+Die zwei fehlenden Module sind nicht vergessen: Planner braucht echte
+Mehrschritt-Pläne mit Dependencies, Scheduler braucht Background Missions.
+Beides ist erst sinnvoll, wenn ein echter Reasoner Pläne liefert.
 
 ---
 
@@ -212,15 +213,82 @@ Sobald Auth geklärt ist (API-Key oder Claude-Code-OAuth), fehlt nur noch ein
 Rauchtest gegen den echten `claude`-CLI-Prozess — die Adapter-Logik selbst
 ist fertig.
 
-## 7. Was als Nächstes ansteht
+## 7. Memory und Personalisierung (Blueprint 8)
+
+Die Pipeline aus Abbildung 3, vollständig:
+
+```
+Observations → Privacy + Sensitivity Filter → Stores
+  → Knowledge Graph + Retrieval → Context Builder
+```
+
+| Stufe | Datei |
+|---|---|
+| Entry-Modell (8.2), Confidence-Regeln (8.3) | `memory/models.py` |
+| Privacy + Sensitivity Filter | `memory/privacy.py` |
+| Persistenz (Port + SQLite) | `persistence/ports.py`, `persistence/sqlite_store.py` |
+| Knowledge Graph + Retrieval | `memory/index.py` |
+| Lernschleife, Routine-Vorschläge (8.3) | `memory/learning.py` |
+| Orchestrierung, Event-Bus-Anbindung | `memory/service.py` |
+| „What JARVIS Knows" (8.4) | `memory/control.py` |
+| Context Builder (5.1) | `context/builder.py` |
+
+### Die vier Sicherheitseigenschaften
+
+1. **Credential-Material wird nie gespeichert.** Unabhängig von Einstellungen
+   und Quelle. Ein Memory-Store ist ein Ort, an dem das Modell einen Schlüssel
+   bei *jedem* zukünftigen Context-Bau wiedersehen würde. Erkennung liegt in
+   `security/redaction.py`, gemeinsam mit dem `SecretsInParamsGate` — zwei
+   Listen könnten auseinanderdriften.
+2. **SECRET-Wissen verlässt das Gerät nie.** Screen-/Kamera-Beobachtungen und
+   Fakten über andere Personen werden vom Privacy Filter als `SECRET`
+   klassifiziert; der Context Builder lässt sie nicht in einen Cloud-Kontext.
+   Das ist dieselbe Regel, die der Model Router auf *Anfragen* anwendet — hier
+   auf das Wissen darin.
+3. **Vergessen hinterlässt keinen Inhalt.** Der Audit-Log ist append-only und
+   hash-verkettet: alles, was dort landet, könnte nie mehr vergessen werden.
+   Deshalb protokolliert `_audit_delete` nur Identität und Form (IDs, Typen,
+   Anzahl, Zeitfenster) — nie Werte. Nachvollziehbar *und* wirklich gelöscht.
+4. **Ein erkanntes Muster wird nie von selbst zum Verhalten.** Blueprint 8.3:
+   „erst nach Freigabe werden riskante oder weitreichende Automationen
+   permanent." Muster erzeugen `RoutineProposal`-Objekte, die nichts tun und
+   nichts auslösen, bis der Besitzer zustimmt.
+
+### Confidence
+
+Eine einzelne Beobachtung ist eine Hypothese (0.30) und steuert nichts.
+Wiederholung nähert sich der Gewissheit an, eine explizite Aussage springt
+sofort hoch (0.85), eine Korrektur gewinnt immer (0.90) — Blueprint 8.3 nennt
+Korrekturen „besonders wertvoll". Unterhalb von 0.65 bleibt eine Überzeugung
+sichtbar in „What JARVIS Knows", wird aber nicht in einen Kontext gepackt.
+
+Praktisch: die sechste Wiederholung derselben Aktion überschreitet die
+Schwelle und erzeugt einen Routine-Vorschlag.
+
+### Was bewusst fehlt
+
+**Vector Search.** Abbildung 3 nennt „Knowledge Graph + Vector Search". Der
+Graph ist da — Subject-Predicate-Value-Tripel, `neighbours()` läuft darauf.
+Vector Search braucht Embeddings, und die brauchen entweder ein lokales
+Embedding-Modell oder ein Cloud-Modell; letzteres würde Memory vom Gerät
+schicken, was Prinzip 3 ohne bewusste Entscheidung verbietet. `MemoryIndex`
+ist deshalb ein Port, `LexicalIndex` erfüllt ihn deterministisch, und ein
+pgvector-Adapter (Blueprint 4.3) tritt hinter dasselbe Interface, sobald die
+Entscheidung gefallen ist.
+
+**Ausführung genehmigter Routinen.** Eine Freigabe schreibt die Routine als
+Procedural Memory. Tatsächlich zeitgesteuert feuern kann sie erst, wenn der
+Scheduler aus 5.1 existiert.
+
+## 8. Was als Nächstes ansteht
 
 Nach Prinzip 5 („build core before spectacle") und in dieser Reihenfolge:
 
 1. **Live-Verifikation des Claude Agent SDK Providers**, sobald Auth
    geklärt ist.
-2. **Context Builder + Memory** (Blueprint 8) — Privacy-Filter, strukturierte
-   Stores, Knowledge Graph. Hier wird PostgreSQL + pgvector relevant.
-3. **Planner + Scheduler** — echte Mehrschritt-Pläne mit Dependencies und
-   Checkpoints, Background Missions.
+2. **Planner + Scheduler** — echte Mehrschritt-Pläne mit Dependencies und
+   Checkpoints, Background Missions. Der Scheduler macht genehmigte Routinen
+   ausführbar.
+3. **Vector Search / pgvector**, sobald über Embeddings entschieden ist.
 4. **Voice Engine** (Blueprint 9) — Wake Word, Streaming STT/TTS, Barge-in.
 5. **HUD** (Blueprint 3) — erst danach.

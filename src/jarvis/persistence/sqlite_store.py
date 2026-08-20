@@ -53,6 +53,27 @@ CREATE TABLE IF NOT EXISTS state (
     key      TEXT PRIMARY KEY,
     document TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS memories (
+    memory_id         TEXT PRIMARY KEY,
+    type              TEXT NOT NULL,
+    subject           TEXT NOT NULL,
+    predicate         TEXT NOT NULL,
+    project_scope     TEXT,
+    confidence        REAL NOT NULL,
+    sensitivity       TEXT NOT NULL,
+    pinned            INTEGER NOT NULL DEFAULT 0,
+    expires_at        TEXT,
+    last_confirmed_at TEXT NOT NULL,
+    document          TEXT NOT NULL
+);
+-- One belief per (subject, predicate, scope): a new sighting must find the
+-- existing entry rather than creating a rival copy of the same claim.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_key
+    ON memories(subject, predicate, IFNULL(project_scope, ''));
+CREATE INDEX IF NOT EXISTS idx_memories_type    ON memories(type);
+CREATE INDEX IF NOT EXISTS idx_memories_scope   ON memories(project_scope);
+CREATE INDEX IF NOT EXISTS idx_memories_recent  ON memories(last_confirmed_at);
 """
 
 
@@ -215,3 +236,102 @@ class SqliteStore:
     async def get_state(self, key: str) -> dict[str, Any] | None:
         rows = await self._read("SELECT document FROM state WHERE key = ?", (key,))
         return json.loads(rows[0]["document"]) if rows else None
+
+    # -- MemoryStore --------------------------------------------------------
+
+    async def put_memory(self, record: dict[str, Any]) -> None:
+        await self._write(
+            "INSERT INTO memories(memory_id, type, subject, predicate, project_scope, "
+            "confidence, sensitivity, pinned, expires_at, last_confirmed_at, document) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(memory_id) DO UPDATE SET "
+            "type=excluded.type, subject=excluded.subject, predicate=excluded.predicate, "
+            "project_scope=excluded.project_scope, confidence=excluded.confidence, "
+            "sensitivity=excluded.sensitivity, pinned=excluded.pinned, "
+            "expires_at=excluded.expires_at, last_confirmed_at=excluded.last_confirmed_at, "
+            "document=excluded.document",
+            (
+                record["memory_id"],
+                record["type"],
+                record["subject"],
+                record["predicate"],
+                record.get("project_scope"),
+                record["confidence"],
+                record["sensitivity"],
+                1 if record.get("pinned") else 0,
+                record.get("expires_at"),
+                record["last_confirmed_at"],
+                json.dumps(record, sort_keys=True, default=str),
+            ),
+        )
+
+    async def get_memory(self, memory_id: str) -> dict[str, Any] | None:
+        rows = await self._read("SELECT document FROM memories WHERE memory_id = ?", (memory_id,))
+        return json.loads(rows[0]["document"]) if rows else None
+
+    async def find_memory(
+        self, subject: str, predicate: str, project_scope: str | None
+    ) -> dict[str, Any] | None:
+        rows = await self._read(
+            "SELECT document FROM memories WHERE subject = ? AND predicate = ? "
+            "AND IFNULL(project_scope, '') = ?",
+            (subject, predicate, project_scope or ""),
+        )
+        return json.loads(rows[0]["document"]) if rows else None
+
+    async def list_memories(
+        self,
+        *,
+        type: str | None = None,
+        subject: str | None = None,
+        project_scope: str | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if type is not None:
+            clauses.append("type = ?")
+            params.append(type)
+        if subject is not None:
+            clauses.append("subject = ?")
+            params.append(subject)
+        if project_scope is not None:
+            clauses.append("IFNULL(project_scope, '') = ?")
+            params.append(project_scope)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        rows = await self._read(
+            f"SELECT document FROM memories {where} "
+            "ORDER BY confidence DESC, last_confirmed_at DESC LIMIT ?",
+            tuple(params),
+        )
+        return [json.loads(r["document"]) for r in rows]
+
+    async def delete_memories(self, memory_ids: list[str]) -> list[str]:
+        if not memory_ids:
+            return []
+        placeholders = ",".join("?" for _ in memory_ids)
+        # Read back what actually exists first, so the caller can audit the
+        # true set of removals rather than what it hoped to remove.
+        rows = await self._read(
+            f"SELECT memory_id FROM memories WHERE memory_id IN ({placeholders})",
+            tuple(memory_ids),
+        )
+        existing = [r["memory_id"] for r in rows]
+        if existing:
+            await self._write(
+                f"DELETE FROM memories WHERE memory_id IN ({placeholders})",
+                tuple(memory_ids),
+            )
+        return existing
+
+    async def list_memories_since(
+        self, since_iso: str, *, include_pinned: bool = False
+    ) -> list[dict[str, Any]]:
+        pinned_clause = "" if include_pinned else "AND pinned = 0"
+        rows = await self._read(
+            f"SELECT document FROM memories WHERE last_confirmed_at >= ? {pinned_clause} "
+            "ORDER BY last_confirmed_at ASC",
+            (since_iso,),
+        )
+        return [json.loads(r["document"]) for r in rows]

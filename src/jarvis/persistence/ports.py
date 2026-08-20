@@ -65,7 +65,44 @@ class StateStore(Protocol):
 
 
 @runtime_checkable
-class Store(EventStore, MissionStore, AuditStore, StateStore, Protocol):
+class MemoryStore(Protocol):
+    """Long-term memory - Blueprint 8.
+
+    Entries are keyed by `memory_id` but *looked up* by their belief key
+    (subject, predicate, project_scope), because a new sighting has to find
+    the existing belief it confirms or contradicts before it can be folded in.
+
+    `delete_memories` returns the ids it actually removed. The caller needs
+    that to write a truthful audit entry for the delete workflow in 8.4 -
+    without ever handing the deleted values back.
+    """
+
+    async def put_memory(self, record: dict[str, Any]) -> None: ...
+
+    async def get_memory(self, memory_id: str) -> dict[str, Any] | None: ...
+
+    async def find_memory(
+        self, subject: str, predicate: str, project_scope: str | None
+    ) -> dict[str, Any] | None: ...
+
+    async def list_memories(
+        self,
+        *,
+        type: str | None = None,
+        subject: str | None = None,
+        project_scope: str | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]: ...
+
+    async def delete_memories(self, memory_ids: list[str]) -> list[str]: ...
+
+    async def list_memories_since(
+        self, since_iso: str, *, include_pinned: bool = False
+    ) -> list[dict[str, Any]]: ...
+
+
+@runtime_checkable
+class Store(EventStore, MissionStore, AuditStore, StateStore, MemoryStore, Protocol):
     """The full storage surface the Core depends on."""
 
     async def open(self) -> None: ...

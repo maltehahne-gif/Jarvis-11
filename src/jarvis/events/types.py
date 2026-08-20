@@ -40,6 +40,11 @@ VERIFICATION_STARTED = "verification.started"
 VERIFICATION_PASSED = "verification.passed"
 VERIFICATION_FAILED = "verification.failed"
 
+# --- memory (Blueprint 8) ---------------------------------------------------
+MEMORY_STORED = "memory.stored"
+MEMORY_DELETED = "memory.deleted"
+MEMORY_ROUTINE_PROPOSED = "memory.routine.proposed"
+
 # --- safety -----------------------------------------------------------------
 KILL_SWITCH_ENGAGED = "safety.kill_switch.engaged"
 KILL_SWITCH_RELEASED = "safety.kill_switch.released"

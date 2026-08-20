@@ -8,9 +8,10 @@ Multi-Agent-Orchestrierung.
 **Source of Truth:** [`docs/JARVIS_Master_Blueprint_1.0.pdf`](docs/JARVIS_Master_Blueprint_1.0.pdf).
 Wo Code und Blueprint sich widersprechen, gewinnt das Blueprint.
 
-**Aktueller Stand: Core 0.1** — der Meilenstein aus Blueprint 5.4. Das Gehirn
-steht, ohne Voice, HUD oder 3D. Architektur und getroffene Entscheidungen:
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+**Aktueller Stand:** Core aus Blueprint 5.4, Claude-Agent-SDK-Provider hinter
+dem Intelligence-Port (6.2), sowie Memory und Personalisierung (8) mit Context
+Builder. Noch ohne Voice, HUD oder 3D. Architektur und getroffene
+Entscheidungen: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Die fünf nicht verhandelbaren Prinzipien
 
@@ -30,12 +31,13 @@ steht, ohne Voice, HUD oder 3D. Architektur und getroffene Entscheidungen:
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -e ".[dev]"
 
-.venv/bin/python -m pytest          # 131 Tests
+.venv/bin/python -m pytest          # 266 Tests
 .venv/bin/python -m jarvis          # http://127.0.0.1:8765
 ```
 
 Das Debug-Dashboard unter `/` zeigt Kommandoeingabe, Live-Event-Stream,
-Missionsstatus, offene Freigaben und die Capability-Tabelle mit Risiko-Leveln.
+Missionsstatus, offene Freigaben, die Capability-Tabelle mit Risiko-Leveln und
+„What JARVIS Knows" mit Privacy-Schaltern und Routine-Vorschlägen.
 
 ## Ausprobieren
 
@@ -52,6 +54,26 @@ post '{"text":"Jarvis, stopp alles"}'                       # Kill Switch
 
 Weitere Endpunkte: `/status`, `/capabilities`, `/missions`, `/events`, `/audit`,
 `/routing`, WebSocket auf `/ws`.
+
+## Memory kontrollieren
+
+```bash
+curl -s $J/memory                       # alles, was JARVIS glaubt
+curl -s "$J/memory/search?q=licht"      # Retrieval mit Score
+curl -s $J/memory/routines              # vorgeschlagene Routinen
+curl -s $J/memory/privacy               # die drei Privacy-Schalter
+
+# "Jarvis, vergiss die letzten 30 Minuten" — gepinnte Einträge bleiben
+curl -s -X POST $J/memory/forget-window -H 'Content-Type: application/json' \
+     -d '{"minutes":30}'
+```
+
+Pro Eintrag: `/memory/{id}/correct`, `/pin`, `/forget`, `/make-temporary`.
+Blockieren mit `/memory/dont-learn`.
+
+Was JARVIS *nicht* lernt: Credential-Material (nie, unabhängig von
+Einstellungen), alles auf der Don't-Learn-Liste, und bei abgeschaltetem Privacy
+Mode das jeweils Betroffene. Screen- und Kamera-Lernen ist standardmäßig aus.
 
 ## Permission-Level (Blueprint 7.1)
 
@@ -74,3 +96,4 @@ Weitere Endpunkte: `/status`, `/capabilities`, `/missions`, `/events`, `/audit`,
 | `JARVIS_PORT` | `8765` | Port |
 | `JARVIS_TRUSTED_DEVICES` | leer | Device-IDs für P5-Aktionen |
 | `JARVIS_BLOCKED_CAPABILITIES` | leer | zusätzliche Deny-Liste |
+| `JARVIS_PROVIDER` | `rules` | `rules` (lokal, offline) oder `claude-agent-sdk` |

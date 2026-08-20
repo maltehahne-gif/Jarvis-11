@@ -83,6 +83,13 @@
     <h2>Capabilities</h2>
     <div id="caps"></div>
   </section>
+
+  <section>
+    <h2>What JARVIS Knows</h2>
+    <div id="privacy"></div>
+    <div id="routines"></div>
+    <div id="knows"></div>
+  </section>
 </main>
 
 <script>
@@ -163,6 +170,81 @@ async function refresh() {
       return `<tr><td>${esc(m.goal)}</td><td class="${cls}">${esc(m.state)}</td>
               <td class="dim">${m.tasks.length}</td></tr>`;
     }).join('') + '</table>';
+
+  await refreshMemory();
+}
+
+// ---- "What JARVIS Knows" (Blueprint 8.4) -----------------------------------
+// Shows source, confidence and last confirmation for every belief, plus the
+// five actions and the three privacy switches the blueprint names.
+async function refreshMemory() {
+  const p = await (await fetch('/memory/privacy')).json();
+  const sw = (key, label) => `<button onclick="togglePrivacy('${key}', ${!p[key]})">
+    ${p[key] ? '<span class="green">on</span>' : '<span class="red">off</span>'} ${label}</button>`;
+  $('privacy').innerHTML =
+    sw('learn_behaviour', 'Verhalten lernen') + ' ' +
+    sw('conversation_memory', 'Gesprächs-Memory') + ' ' +
+    sw('screen_camera_learning', 'Screen/Kamera') +
+    ` <button onclick="forgetWindow(30)">vergiss die letzten 30 min</button>`;
+
+  const routines = await (await fetch('/memory/routines')).json();
+  $('routines').innerHTML = routines.map(r => `
+    <div class="pending">
+      <div class="amber">Routine vorgeschlagen: ${esc(r.capability)} <span class="dim">${esc(r.trigger)}</span></div>
+      <div class="dim">${esc(r.rationale)}</div>
+      <button onclick="decideRoutine('${esc(r.proposal_id)}', true)">übernehmen</button>
+      <button onclick="decideRoutine('${esc(r.proposal_id)}', false)">verwerfen</button>
+    </div>`).join('');
+
+  const m = await (await fetch('/memory?limit=40')).json();
+  const s = m.summary;
+  $('knows').innerHTML =
+    `<div class="dim">${s.total} Einträge · ${s.actionable} belastbar · ${s.pinned} gepinnt</div>` +
+    '<table><tr><th>Typ</th><th>Wissen</th><th>Conf</th><th>Quelle</th><th></th></tr>' +
+    m.entries.map(e => {
+      const conf = e.actionable ? 'green' : 'dim';
+      return `<tr>
+        <td class="dim">${esc(e.type)}</td>
+        <td>${esc(e.subject)} · ${esc(e.predicate)} <span class="amber">${esc(JSON.stringify(e.value))}</span>
+            ${e.pinned ? '<span class="cyan">📌</span>' : ''}
+            ${e.sensitivity === 'secret' ? '<span class="red">secret</span>' : ''}</td>
+        <td class="${conf}">${e.confidence.toFixed(2)}<span class="dim">/${e.observations}</span></td>
+        <td class="dim">${esc(e.source)}</td>
+        <td><button onclick="memAction('${esc(e.memory_id)}','pin')">pin</button>
+            <button onclick="memAction('${esc(e.memory_id)}','forget')">vergiss</button></td>
+      </tr>`;
+    }).join('') + '</table>';
+}
+
+async function togglePrivacy(key, value) {
+  await fetch('/memory/privacy', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ [key]: value })
+  });
+  refreshMemory();
+}
+
+async function memAction(id, action) {
+  await fetch(`/memory/${id}/${action}`, { method: 'POST' });
+  refreshMemory();
+}
+
+async function forgetWindow(minutes) {
+  const r = await (await fetch('/memory/forget-window', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ minutes })
+  })).json();
+  showReply(`vergiss die letzten ${minutes} min`,
+    { message: `${r.deleted_count} Einträge gelöscht, ${r.protected_pinned} gepinnt geschützt` });
+  refreshMemory();
+}
+
+async function decideRoutine(id, approve) {
+  await fetch(`/memory/routines/${id}`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ approve })
+  });
+  refreshMemory();
 }
 
 async function decide(action, fingerprint, strong) {

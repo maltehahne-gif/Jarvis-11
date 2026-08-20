@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from jarvis.events.envelope import utc_now
 from jarvis.permission.levels import PermissionLevel
+from jarvis.security.redaction import contains_credential
 
 if TYPE_CHECKING:
     from jarvis.capability.models import Capability, ExecutionContext
@@ -110,29 +111,23 @@ class SecretsInParamsGate:
     Blueprint 7.2: "das Modell soll Schlüssel möglichst nie im Klartext sehen"
     and 7.3: "keine secrets im prompt". Secrets belong in the credential broker;
     a parameter that looks like a key is a defect worth failing loudly on.
+
+    Detection lives in `jarvis.security.redaction`, shared with the memory
+    Privacy Filter so the two can never disagree about what a secret looks
+    like.
     """
 
     name: str = "secrets_in_params"
-    markers: tuple[str, ...] = (
-        "-----BEGIN",
-        "sk-ant-",
-        "AKIA",
-        "ghp_",
-        "xoxb-",
-    )
 
     def __call__(
         self, capability: Capability, params: dict[str, Any], context: ExecutionContext
     ) -> GateResult | None:
         for key, value in params.items():
-            if not isinstance(value, str):
-                continue
-            for marker in self.markers:
-                if marker in value:
-                    return GateResult(
-                        self.name,
-                        f"parameter {key} appears to contain credential material",
-                    )
+            if contains_credential(value):
+                return GateResult(
+                    self.name,
+                    f"parameter {key} appears to contain credential material",
+                )
         return None
 
 
