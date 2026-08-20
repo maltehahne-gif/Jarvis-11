@@ -1,4 +1,4 @@
-# JARVIS Core 0.1 — Architektur und Entscheidungen
+# JARVIS Core — Architektur und Entscheidungen
 
 Source of Truth ist `docs/JARVIS_Master_Blueprint_1.0.pdf`. Wo dieser Code und
 das Blueprint sich widersprechen, gewinnt das Blueprint.
@@ -158,12 +158,66 @@ Jedes Kriterium hat eine eigene Testklasse in `tests/test_dod_core_01.py`.
 
 ---
 
-## 6. Was als Nächstes ansteht
+## 6. Claude Agent SDK Provider (Core 0.2)
+
+`agents/claude_sdk_provider.py` implementiert den `IntelligenceProvider`-Port
+mit dem echten Claude Agent SDK. Stand jetzt: **vollständig gebaut und
+getestet, aber ohne verifizierten Live-Call** — auf deine Entscheidung hin
+("Struktur ohne Live-Call, Auth später").
+
+### Die Sicherheitsgrenze
+
+Das SDK führt normalerweise seine eigene Agent-Loop mit echtem Tool-Zugriff
+(Bash, Dateien, Web) über sein eigenes Berechtigungssystem aus. Genau das ist
+der direkte Modell-zu-OS-Zugriff, den Prinzip 2 verbietet. Drei unabhängige,
+sich überlappende Sperren verhindern das — jede für sich reicht schon:
+
+1. **`tools=[]`** — kein eingebautes SDK-Tool (Bash, Read, Edit, WebFetch, …)
+   existiert in der Session überhaupt, nicht nur „nicht erlaubt".
+2. **Inerte MCP-Wrapper** — jede Capability wird als MCP-Tool angeboten,
+   dessen Handler nie den echten Capability-Handler aufruft. Er zeichnet nur
+   auf, was das Modell vorschlägt, und antwortet „queued". Die eigentliche
+   Ausführung passiert danach ganz normal über Agent Coordinator →
+   Execution Gateway → Permission Engine, wie bei jedem anderen Provider.
+3. **`strict_mcp_config=True` + `setting_sources=[]`** — keine fremde
+   `.mcp.json` oder `~/.claude/settings.json` vom Host fließt in die Session
+   ein.
+
+Das Modul selbst hat keine Referenz auf `CapabilityRegistry` oder irgendeinen
+echten Handler — nur auf die Capability-*Beschreibungen*, die `AgentRequest`
+mitgibt. Ein `ThinkingBlock` aus der Antwort wird verworfen, nie
+weitergereicht (Blueprint 2.4: keine versteckten Reasoning-Ketten in der UI).
+
+### Provider-Auswahl
+
+`agents/factory.py::build_provider(name)` — `"rules"` (Standard) oder
+`"claude-agent-sdk"`, gesteuert über `CoreConfig.provider` /
+`JARVIS_PROVIDER`. Der Rule-Provider bleibt Standard, bis Auth geklärt ist;
+nichts am bestehenden Verhalten ändert sich, wenn man nichts konfiguriert.
+
+### Tests
+
+`tests/test_claude_sdk_provider.py` mockt `sdk.query` und
+`sdk.create_sdk_mcp_server` vollständig — kein CLI-Subprozess, kein
+Netzwerk-Call, keine Credentials nötig. Abgedeckt: JSON-Schema-Konvertierung,
+die drei Sperren einzeln, dass ein simulierter Tool-Aufruf nur einen Vorschlag
+aufzeichnet, Fehlerübersetzung (`CLINotFoundError`/`CLIConnectionError` →
+`ProviderUnavailable`, `ResultMessage.is_error` → `ProviderError`), und die
+Integration mit dem bestehenden Agent Coordinator.
+
+### Offen
+
+Ein echter Live-Call gegen die Anthropic-API ist noch nicht verifiziert.
+Sobald Auth geklärt ist (API-Key oder Claude-Code-OAuth), fehlt nur noch ein
+Rauchtest gegen den echten `claude`-CLI-Prozess — die Adapter-Logik selbst
+ist fertig.
+
+## 7. Was als Nächstes ansteht
 
 Nach Prinzip 5 („build core before spectacle") und in dieser Reihenfolge:
 
-1. **Claude Agent SDK hinter dem bestehenden Port** — braucht deine
-   Billing/Auth-Entscheidung.
+1. **Live-Verifikation des Claude Agent SDK Providers**, sobald Auth
+   geklärt ist.
 2. **Context Builder + Memory** (Blueprint 8) — Privacy-Filter, strukturierte
    Stores, Knowledge Graph. Hier wird PostgreSQL + pgvector relevant.
 3. **Planner + Scheduler** — echte Mehrschritt-Pläne mit Dependencies und

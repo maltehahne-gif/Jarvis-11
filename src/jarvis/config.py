@@ -29,6 +29,10 @@ class CoreConfig:
     grant_ttl: timedelta = timedelta(minutes=15)
     budget: Budget = field(default_factory=Budget)
     max_agent_turns: int = 6
+    #: "rules" (default, offline-safe) or "claude-agent-sdk". Blueprint 6.2's
+    #: Billing/Auth question decides when the latter is actually used; until
+    #: then the Core stays fully functional on the rule-based provider.
+    provider: str = "rules"
 
     @classmethod
     def from_env(cls) -> CoreConfig:
@@ -42,6 +46,7 @@ class CoreConfig:
             port=int(os.getenv("JARVIS_PORT", "8765")),
             trusted_devices=_set("JARVIS_TRUSTED_DEVICES"),
             blocked_capabilities=_set("JARVIS_BLOCKED_CAPABILITIES"),
+            provider=os.getenv("JARVIS_PROVIDER", "rules"),
         )
 
     def data_dir(self) -> Path:

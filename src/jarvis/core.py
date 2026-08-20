@@ -24,8 +24,8 @@ from datetime import timedelta
 from typing import Any
 
 from jarvis.agents.coordinator import AgentCoordinator, AgentRun
+from jarvis.agents.factory import build_provider
 from jarvis.agents.provider import IntelligenceProvider
-from jarvis.agents.rule_provider import RuleBasedProvider
 from jarvis.audit.logger import AuditLogger
 from jarvis.capability.models import ExecutionContext
 from jarvis.capability.registry import CapabilityRegistry
@@ -113,7 +113,7 @@ class JarvisCore:
         self.router = IntentRouter(self.registry)
         self.model_router = ModelRouter()
         self.coordinator = AgentCoordinator(
-            provider=provider or RuleBasedProvider(),
+            provider=provider or build_provider(self.config.provider),
             gateway=self.gateway,
             registry=self.registry,
             permissions=self.permissions,
