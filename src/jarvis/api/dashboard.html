@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JARVIS Core 0.1 — Debug</title>
+<!--
+  Deliberately plain. DoD 5.4 says "Keine UI außer minimalem Debug-Dashboard ist
+  für diesen Meilenstein nötig", and Principle 5 is "build core before
+  spectacle". The HUD from Blueprint 3 is a later phase; this page exists only
+  to make the Core's events, verdicts and mission states observable.
+-->
+<style>
+  :root { color-scheme: dark; --bg:#0b0d10; --fg:#d6dae0; --dim:#7a828c;
+          --amber:#e8a13a; --cyan:#4bb3d4; --red:#d4574b; --green:#5cae7a;
+          --line:#1c2128; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.5
+         ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  header { padding:12px 16px; border-bottom:1px solid var(--line);
+           display:flex; gap:16px; align-items:baseline; flex-wrap:wrap; }
+  h1 { font-size:13px; margin:0; letter-spacing:.18em; color:var(--amber); }
+  .meta { color:var(--dim); }
+  main { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line);
+         min-height:calc(100vh - 49px); }
+  section { background:var(--bg); padding:12px 16px; overflow:auto; max-height:calc(100vh - 49px); }
+  h2 { font-size:11px; letter-spacing:.16em; color:var(--dim); margin:0 0 10px;
+       text-transform:uppercase; font-weight:400; }
+  form { display:flex; gap:8px; margin-bottom:12px; }
+  input[type=text] { flex:1; background:#11151a; border:1px solid var(--line);
+                     color:var(--fg); padding:8px 10px; font:inherit; border-radius:3px; }
+  input[type=text]:focus { outline:1px solid var(--cyan); }
+  button { background:#11151a; border:1px solid var(--line); color:var(--fg);
+           padding:8px 12px; font:inherit; cursor:pointer; border-radius:3px; }
+  button:hover { border-color:var(--cyan); color:#fff; }
+  .row { border-bottom:1px solid var(--line); padding:6px 0; }
+  .t { color:var(--cyan); }
+  .dim { color:var(--dim); }
+  .amber { color:var(--amber); }
+  .red { color:var(--red); }
+  .green { color:var(--green); }
+  pre { margin:4px 0 0; white-space:pre-wrap; word-break:break-word; color:var(--dim); }
+  table { width:100%; border-collapse:collapse; }
+  td, th { text-align:left; padding:4px 8px 4px 0; border-bottom:1px solid var(--line);
+           vertical-align:top; }
+  th { color:var(--dim); font-weight:400; font-size:11px; text-transform:uppercase; }
+  .pending { border:1px solid var(--amber); padding:8px; margin-bottom:8px; border-radius:3px; }
+  @media (max-width: 860px) { main { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>J.A.R.V.I.S. CORE 0.1</h1>
+  <span class="meta" id="conn">verbinde…</span>
+  <span class="meta" id="killswitch"></span>
+  <span class="meta" id="counts"></span>
+</header>
+
+<main>
+  <section>
+    <h2>Kommando</h2>
+    <form id="cmd">
+      <input type="text" id="text" placeholder="z. B. Licht im Office an" autocomplete="off" autofocus>
+      <input type="text" id="grants" placeholder="scopes" size="10" title="z. B. comms,secrets">
+      <button type="submit">senden</button>
+    </form>
+    <div id="pending"></div>
+    <h2>Antworten</h2>
+    <div id="replies"></div>
+  </section>
+
+  <section>
+    <h2>Live-Events</h2>
+    <div id="events"></div>
+  </section>
+
+  <section>
+    <h2>Missionen</h2>
+    <div id="missions"></div>
+  </section>
+
+  <section>
+    <h2>Capabilities</h2>
+    <div id="caps"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+// ---- live event stream -----------------------------------------------------
+// Renders only what the Core published. Nothing here fabricates status.
+let ws;
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen  = () => $('conn').textContent = 'verbunden';
+  ws.onclose = () => { $('conn').textContent = 'getrennt — neuer Versuch…'; setTimeout(connect, 1500); };
+  ws.onmessage = (m) => {
+    const e = JSON.parse(m.data);
+    const cls = e.type.includes('denied') || e.type.includes('failed') ? 'red'
+              : e.type.includes('passed') || e.type.includes('succeeded') ? 'green'
+              : e.type.includes('confirmation') || e.type.includes('kill') ? 'amber' : 't';
+    const el = document.createElement('div');
+    el.className = 'row';
+    el.innerHTML = `<span class="${cls}">${esc(e.type)}</span>
+      <span class="dim">${esc(e.timestamp.slice(11,19))} · ${esc(e.source)} · ${esc(e.priority)}</span>
+      <pre>${esc(JSON.stringify(e.payload))}</pre>`;
+    $('events').prepend(el);
+    while ($('events').children.length > 200) $('events').lastChild.remove();
+    refreshSoon();
+  };
+}
+connect();
+
+// ---- command ---------------------------------------------------------------
+$('cmd').onsubmit = async (ev) => {
+  ev.preventDefault();
+  const text = $('text').value.trim();
+  if (!text) return;
+  const grants = $('grants').value.split(',').map(s => s.trim()).filter(Boolean);
+  $('text').value = '';
+  const res = await fetch('/command', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ text, grants, device_id: 'debug-dashboard' })
+  });
+  showReply(text, await res.json());
+  refresh();
+};
+
+function showReply(text, r) {
+  const v = r.execution && r.execution.verification;
+  const el = document.createElement('div');
+  el.className = 'row';
+  el.innerHTML = `<div><span class="dim">&gt;</span> ${esc(text)}</div>
+    <div class="amber">${esc(r.message)}</div>
+    <div class="dim">${esc(r.mission_state || '')} ${r.intent ? '· route=' + esc(r.intent.route) : ''}
+      ${v ? '· verify=' + esc(v.status) + (v.tool_reported_success && !v.goal_reached
+            ? ' <span class="red">(Tool meldete Erfolg)</span>' : '') : ''}</div>`;
+  $('replies').prepend(el);
+}
+
+// ---- pending approvals -----------------------------------------------------
+async function refresh() {
+  const s = await (await fetch('/status')).json();
+  $('killswitch').innerHTML = s.kill_switch
+    ? '<span class="red">KILL SWITCH AKTIV</span>' : '';
+  $('counts').textContent = `${s.events_published} events · ${s.active_missions.length} aktiv`;
+
+  $('pending').innerHTML = s.pending_approvals.map(p => `
+    <div class="pending">
+      <div class="amber">Freigabe nötig: ${esc(p.capability)} <span class="dim">(${esc(p.confirmation)})</span></div>
+      <pre>${esc(JSON.stringify(p.params))}</pre>
+      <button onclick="decide('approve','${esc(p.fingerprint)}',${p.confirmation === 'strong'})">freigeben</button>
+      <button onclick="decide('deny','${esc(p.fingerprint)}',false)">ablehnen</button>
+    </div>`).join('');
+
+  const missions = await (await fetch('/missions?limit=15')).json();
+  $('missions').innerHTML = '<table><tr><th>Ziel</th><th>Status</th><th>Tasks</th></tr>' +
+    missions.map(m => {
+      const cls = m.state === 'COMPLETED' ? 'green'
+                : ['FAILED','BLOCKED','CANCELED'].includes(m.state) ? 'red' : 'amber';
+      return `<tr><td>${esc(m.goal)}</td><td class="${cls}">${esc(m.state)}</td>
+              <td class="dim">${m.tasks.length}</td></tr>`;
+    }).join('') + '</table>';
+}
+
+async function decide(action, fingerprint, strong) {
+  const res = await fetch('/' + action, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ fingerprint, strong, device_id: 'debug-dashboard' })
+  });
+  showReply(action, await res.json());
+  refresh();
+}
+
+let timer;
+const refreshSoon = () => { clearTimeout(timer); timer = setTimeout(refresh, 250); };
+
+(async () => {
+  const caps = await (await fetch('/capabilities')).json();
+  $('caps').innerHTML = '<table><tr><th>Capability</th><th>Level</th><th>Scopes</th><th>Verify</th></tr>' +
+    caps.map(c => `<tr><td>${esc(c.name)}</td>
+      <td class="${c.level === 'P6' ? 'red' : c.level >= 'P3' ? 'amber' : 'dim'}">${esc(c.level)} ${esc(c.level_label)}</td>
+      <td class="dim">${esc(c.required_grants.join(',') || '—')}</td>
+      <td class="dim">${c.verifiable ? 'ja' : 'nein'}</td></tr>`).join('') + '</table>';
+  refresh();
+})();
+</script>
+</body>
+</html>

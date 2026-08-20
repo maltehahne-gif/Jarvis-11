@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local-first runtime state. Principle 3: this data stays on the owner's
+# machine and never belongs in the repository.
+data/
+*.db
+*.db-wal
+*.db-shm
