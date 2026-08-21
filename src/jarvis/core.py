@@ -62,6 +62,15 @@ from jarvis.scheduler.watchdog import Watchdog
 from jarvis.state.manager import StateManager
 from jarvis.tools.mock import MockWorld, register_mock_tools
 from jarvis.verify.verifier import Verifier
+from jarvis.voice.mock import (
+    RecordingAudioSink,
+    ScriptedSpeechToText,
+    ScriptedTextToSpeech,
+    ScriptedWakeWord,
+)
+from jarvis.voice.pipeline import VoicePipeline
+from jarvis.voice.ports import AudioSink, SpeechToText, TextToSpeech, WakeWordDetector
+from jarvis.voice.presence import PresenceService
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +108,10 @@ class JarvisCore:
         *,
         store: Store | None = None,
         provider: IntelligenceProvider | None = None,
+        wake: WakeWordDetector | None = None,
+        stt: SpeechToText | None = None,
+        tts: TextToSpeech | None = None,
+        sink: AudioSink | None = None,
     ) -> None:
         self.config = config or CoreConfig()
 
@@ -173,6 +186,20 @@ class JarvisCore:
             max_duration=self.config.budget.max_duration,
             audit=self.audit,
         )
+
+        # Voice is an input surface, not an authority. A spoken command goes
+        # through `handle_command` like any other, and Blueprint 7.2 keeps
+        # voice identity a comfort signal rather than an authenticator.
+        self.presence = PresenceService(self.state)
+        self.voice = VoicePipeline(
+            core=self,
+            wake=wake or ScriptedWakeWord(),
+            stt=stt or ScriptedSpeechToText(),
+            tts=tts or ScriptedTextToSpeech(),
+            sink=sink or RecordingAudioSink(),
+            presence=self.presence,
+            bus=self.bus,
+        )
         self._started = False
 
     # -- lifecycle ----------------------------------------------------------
@@ -198,6 +225,7 @@ class JarvisCore:
     async def stop(self) -> None:
         if not self._started:
             return
+        await self.voice.stop()
         await self.scheduler.stop()
         await self.store.close()
         self._started = False

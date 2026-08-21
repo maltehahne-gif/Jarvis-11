@@ -27,11 +27,14 @@ from pydantic import BaseModel, Field
 
 from jarvis.config import CoreConfig
 from jarvis.core import JarvisCore
-from jarvis.events.envelope import utc_now
+from jarvis.events import types as ev
+from jarvis.events.envelope import Event, utc_now
 from jarvis.memory.models import MemoryType
 from jarvis.permission.policy import Confirmation
 from jarvis.planner.plan import PlanError
 from jarvis.scheduler.jobs import JobKind, ScheduledJob, parse_daily_at
+from jarvis.voice.mock import ScriptedSpeechToText, ScriptedWakeWord
+from jarvis.voice.personality import Verbosity, VoiceMode
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +92,37 @@ class RoutineDecisionRequest(BaseModel):
 
 class PlanRequest(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
+
+
+class WakeRequest(BaseModel):
+    """What the owner said after the wake word."""
+
+    text: str = Field(min_length=1, max_length=4000)
+    device_id: str = "desk-01"
+
+
+class VoiceModeRequest(BaseModel):
+    """Blueprint 9.1's Night/Whisper/Silent modes."""
+
+    mode: str = "normal"
+    verbosity: str | None = None
+
+
+class DeviceRequest(BaseModel):
+    """Register a device and what it can do.
+
+    `private_audio` is a privacy boundary rather than a preference: it is what
+    lets sensitive answers be spoken at all (Blueprint 9.1).
+    """
+
+    device_id: str = Field(min_length=1, max_length=120)
+    kind: str = "unknown"
+    trusted: bool = False
+    has_speaker: bool = False
+    has_display: bool = False
+    private_audio: bool = False
+    room: str | None = None
+    audio_quality: int = Field(default=0, ge=0, le=100)
 
 
 class JobRequest(BaseModel):
@@ -296,6 +330,75 @@ def create_app(core: JarvisCore | None = None, config: CoreConfig | None = None)
     @app.post("/watchdog/sweep")
     async def watchdog_sweep() -> dict[str, Any]:
         return (await core.watchdog.sweep()).to_dict()
+
+    # -- voice (Blueprint 9) -----------------------------------------------
+
+    @app.get("/voice")
+    async def voice() -> dict[str, Any]:
+        return core.voice.snapshot()
+
+    @app.post("/voice/wake")
+    async def voice_wake(request: WakeRequest) -> dict[str, Any]:
+        """Simulate the wake word and run one turn.
+
+        Real wake detection is on-device; this is the seam a device agent
+        would call, and the only way to drive the pipeline without a
+        microphone.
+        """
+        wake = getattr(core.voice, "_wake", None)
+        stt = getattr(core.voice, "_stt", None)
+        if not isinstance(wake, ScriptedWakeWord) or not isinstance(stt, ScriptedSpeechToText):
+            raise HTTPException(status_code=409, detail="no scripted voice input attached")
+
+        stt.enqueue(request.text)
+        turn = await core.voice.handle_wake(wake.fire(request.device_id))
+        return turn.to_dict()
+
+    @app.post("/voice/barge-in")
+    async def voice_barge_in() -> dict[str, Any]:
+        """Blueprint 9.1: a new question or "Jarvis, stopp" ends speech now."""
+        return {"stopped_in_ms": round(await core.voice.barge_in("api"), 2)}
+
+    @app.post("/voice/mode")
+    async def voice_mode(request: VoiceModeRequest) -> dict[str, Any]:
+        previous = core.voice.mode
+        core.voice.mode = VoiceMode(request.mode)
+        if request.verbosity is not None:
+            core.voice.verbosity = Verbosity(request.verbosity)
+        await core.bus.publish(
+            Event(
+                type=ev.VOICE_MODE_CHANGED,
+                source="api",
+                payload={
+                    "from": str(previous),
+                    "to": str(core.voice.mode),
+                    "verbosity": str(core.voice.verbosity),
+                },
+            )
+        )
+        return {"mode": str(core.voice.mode), "verbosity": str(core.voice.verbosity)}
+
+    @app.get("/voice/latency")
+    async def voice_latency() -> dict[str, Any]:
+        return core.voice.monitor.report()
+
+    @app.post("/devices")
+    async def register_device(request: DeviceRequest) -> dict[str, Any]:
+        device = await core.state.register_device(
+            request.device_id,
+            kind=request.kind,
+            trusted=request.trusted,
+            has_speaker=request.has_speaker,
+            has_display=request.has_display,
+            private_audio=request.private_audio,
+            room=request.room,
+            audio_quality=request.audio_quality,
+        )
+        return device.to_dict()
+
+    @app.get("/presence")
+    async def presence() -> dict[str, Any]:
+        return core.presence.snapshot()
 
     # -- "What JARVIS Knows" (Blueprint 8.4) -------------------------------
 

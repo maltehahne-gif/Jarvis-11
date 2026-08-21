@@ -63,6 +63,8 @@
       <input type="text" id="text" placeholder="z. B. Licht im Office an" autocomplete="off" autofocus>
       <input type="text" id="grants" placeholder="scopes" size="10" title="z. B. comms,secrets">
       <button type="submit">senden</button>
+      <button type="button" onclick="speak($('text').value.trim()); $('text').value='';"
+              title="Gleicher Weg wie tippen - Sprache ist eine Eingabe, keine Vollmacht">🎙 sprechen</button>
     </form>
     <div id="pending"></div>
     <h2>Antworten</h2>
@@ -82,6 +84,13 @@
   <section>
     <h2>Capabilities</h2>
     <div id="caps"></div>
+  </section>
+
+  <section>
+    <h2>Voice</h2>
+    <div id="voice-controls"></div>
+    <div id="voice-latency"></div>
+    <div id="voice-turns"></div>
   </section>
 
   <section>
@@ -196,8 +205,78 @@ async function refresh() {
       </tr>`;
     }).join('') + '</table>';
 
+  await refreshVoice();
   await refreshJobs();
   await refreshMemory();
+}
+
+// ---- voice (Blueprint 9) ---------------------------------------------------
+// The latency table is the interesting part: 9.2 calls these targets rather
+// than guarantees, so a miss is shown in red and not hidden.
+async function refreshVoice() {
+  const v = await (await fetch('/voice')).json();
+  const modes = ['normal','night','whisper','silent'].map(m =>
+    `<button onclick="setVoiceMode('${m}')">${v.mode === m ? '▸ ' : ''}${m}</button>`
+  ).join(' ');
+
+  const p = v.presence;
+  $('voice-controls').innerHTML = `
+    <div>${modes}
+      <button onclick="bargeIn()">barge-in</button></div>
+    <div class="dim">Lautsprecher: ${esc((p.speakers || []).join(', ') || '—')}
+      ${(p.private_speakers || []).length
+        ? `· privat: <span class="green">${esc(p.private_speakers.join(', '))}</span>`
+        : '· <span class="amber">kein privates Audiogerät</span>'}
+      · ${v.turns} Turns${v.speaking ? ' · <span class="amber">spricht</span>' : ''}</div>`;
+
+  const rows = (v.latency.checkpoints || []).map(c => {
+    const cls = c.miss_rate > 0 ? 'red' : 'green';
+    return `<tr><td class="dim">${esc(c.checkpoint)}</td>
+      <td class="${cls}">${c.median_ms} ms</td>
+      <td class="dim">${c.worst_ms} ms</td>
+      <td class="dim">Ziel ${c.target_ms}</td>
+      <td class="${cls}">${(c.miss_rate * 100).toFixed(0)}% verfehlt</td></tr>`;
+  }).join('');
+  $('voice-latency').innerHTML = rows
+    ? `<table><tr><th>Messpunkt</th><th>median</th><th>worst</th><th></th><th></th></tr>${rows}</table>`
+    : '<div class="dim">noch keine Sprachrunden</div>';
+}
+
+async function setVoiceMode(mode) {
+  await fetch('/voice/mode', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ mode })
+  });
+  refreshVoice();
+}
+
+async function bargeIn() {
+  const r = await (await fetch('/voice/barge-in', { method: 'POST' })).json();
+  showReply('barge-in', { message: `Audio gestoppt nach ${r.stopped_in_ms} ms` });
+  refreshVoice();
+}
+
+// Speaking a command uses the same path as typing one - voice is an input
+// surface, not an authority (Blueprint 7.2).
+async function speak(text) {
+  const r = await (await fetch('/voice/wake', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ text, device_id: 'desk-01' })
+  })).json();
+
+  const said = (r.spoken_phrases || []).join(' ');
+  const where = r.output && r.output.device_id;
+  showReply('🎙 ' + text, {
+    message: said || '(nichts gesprochen)',
+    mission_state: r.command && r.command.mission_state,
+    execution: r.command && r.command.execution
+  });
+  if (!said && r.output) {
+    showReply('zurückgehalten', { message: r.output.reason });
+  } else if (where) {
+    showReply('ausgegeben auf', { message: where });
+  }
+  refresh();
 }
 
 // ---- scheduler (Blueprint 5.1) ---------------------------------------------

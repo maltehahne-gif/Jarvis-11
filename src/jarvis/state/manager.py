@@ -29,6 +29,19 @@ class DeviceState:
     trusted: bool = False
     last_seen: datetime = field(default_factory=utc_now)
 
+    # -- output capabilities (Blueprint 2.1, 9.1, 10.5) ---------------------
+
+    has_speaker: bool = False
+    has_display: bool = False
+    #: True for headphones and a phone held to the ear - output only the owner
+    #: hears. Blueprint 9.1 routes sensitive content here rather than into a
+    #: room, so this flag is a privacy boundary, not a comfort setting.
+    private_audio: bool = False
+    #: Which room a shared speaker stands in. `None` for devices that travel.
+    room: str | None = None
+    #: Higher is better. Used to pick "der beste Audio-Satellit" (10.5).
+    audio_quality: int = 0
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "device_id": self.device_id,
@@ -36,6 +49,11 @@ class DeviceState:
             "online": self.online,
             "trusted": self.trusted,
             "last_seen": self.last_seen.isoformat(),
+            "has_speaker": self.has_speaker,
+            "has_display": self.has_display,
+            "private_audio": self.private_audio,
+            "room": self.room,
+            "audio_quality": self.audio_quality,
         }
 
     @classmethod
@@ -46,6 +64,11 @@ class DeviceState:
             online=data.get("online", False),
             trusted=data.get("trusted", False),
             last_seen=datetime.fromisoformat(data["last_seen"]),
+            has_speaker=data.get("has_speaker", False),
+            has_display=data.get("has_display", False),
+            private_audio=data.get("private_audio", False),
+            room=data.get("room"),
+            audio_quality=data.get("audio_quality", 0),
         )
 
 
@@ -82,15 +105,37 @@ class StateManager:
     # -- devices ------------------------------------------------------------
 
     async def register_device(
-        self, device_id: str, *, kind: str = "unknown", trusted: bool = False
+        self,
+        device_id: str,
+        *,
+        kind: str = "unknown",
+        trusted: bool = False,
+        has_speaker: bool = False,
+        has_display: bool = False,
+        private_audio: bool = False,
+        room: str | None = None,
+        audio_quality: int = 0,
     ) -> DeviceState:
-        device = DeviceState(device_id=device_id, kind=kind, online=True, trusted=trusted)
+        device = DeviceState(
+            device_id=device_id,
+            kind=kind,
+            online=True,
+            trusted=trusted,
+            has_speaker=has_speaker,
+            has_display=has_display,
+            private_audio=private_audio,
+            room=room,
+            audio_quality=audio_quality,
+        )
         self._devices[device_id] = device
         await self._save()
         return device
 
     def device(self, device_id: str) -> DeviceState | None:
         return self._devices.get(device_id)
+
+    def devices(self) -> list[DeviceState]:
+        return list(self._devices.values())
 
     def trusted_devices(self) -> frozenset[str]:
         return frozenset(d.device_id for d in self._devices.values() if d.trusted)

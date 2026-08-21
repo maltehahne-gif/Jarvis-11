@@ -10,9 +10,12 @@ Wo Code und Blueprint sich widersprechen, gewinnt das Blueprint.
 
 **Aktueller Stand:** alle Core-Module aus Blueprint 5.1 sind gebaut — inklusive
 Memory und Personalisierung (8), Context Builder, Planner, Mission Runner mit
-Checkpoints, Scheduler und Watchdog. Claude-Agent-SDK-Provider steht hinter dem
-Intelligence-Port (6.2). Noch ohne Voice, HUD oder 3D. Architektur und
-getroffene Entscheidungen: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Checkpoints, Scheduler und Watchdog. Dazu die Voice Engine (9) als
+Streaming-Pipeline mit Personality Contract, Latenz-Budget und
+Presence-Routing; echte Wake-/STT-/TTS-Engines treten hinter die Ports, sobald
+ein Gerät mit Mikrofon dran ist. Claude-Agent-SDK-Provider steht hinter dem
+Intelligence-Port (6.2). Noch ohne HUD oder 3D. Architektur und getroffene
+Entscheidungen: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Die fünf nicht verhandelbaren Prinzipien
 
@@ -32,7 +35,7 @@ getroffene Entscheidungen: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -e ".[dev]"
 
-.venv/bin/python -m pytest          # 341 Tests
+.venv/bin/python -m pytest          # 411 Tests
 .venv/bin/python -m jarvis          # http://127.0.0.1:8765
 ```
 
@@ -96,6 +99,35 @@ curl -s -X POST $J/missions/{id}/resume  # ab Checkpoint fortsetzen
 aufwärts führt nichts aus, sondern parkt: die Mission wartet auf deine
 Freigabe, und ein dringendes Event sagt es dir. In einem unbeaufsichtigten
 Kontext kann niemand bestätigen — also bestätigt auch niemand.
+
+## Sprechen
+
+```bash
+# Geräte registrieren; private_audio ist eine Privatsphäre-Grenze,
+# keine Komforteinstellung
+curl -s -X POST $J/devices -H 'Content-Type: application/json' \
+     -d '{"device_id":"kitchen-speaker","trusted":true,"has_speaker":true,
+          "room":"kitchen","audio_quality":70}'
+curl -s -X POST $J/devices -H 'Content-Type: application/json' \
+     -d '{"device_id":"phone","trusted":true,"has_speaker":true,"private_audio":true}'
+
+# Eine Sprachrunde (echte Wake-Erkennung liegt auf dem Gerät)
+curl -s -X POST $J/voice/wake -H 'Content-Type: application/json' \
+     -d '{"text":"Licht im Office an","device_id":"desk-01"}'
+
+curl -s -X POST $J/voice/barge-in                      # Sprachausgabe sofort stoppen
+curl -s -X POST $J/voice/mode -d '{"mode":"night"}' \
+     -H 'Content-Type: application/json'               # normal|night|whisper|silent
+curl -s $J/voice/latency                               # Zielwerte aus 9.2, mit Miss-Rate
+curl -s $J/presence                                    # wer könnte antworten
+```
+
+**Sensible Antworten landen nie laut im Raum.** Sie brauchen ein privates
+Ausgabegerät — Kopfhörer oder Handy. Ist keins online, bleibt JARVIS still und
+zeigt es auf einem Bildschirm; ein Raumlautsprecher ist kein Fallback.
+
+**Sprache ist eine Eingabe, keine Vollmacht.** Ein gesprochenes „installiere
+Docker" durchläuft dieselbe Rechteprüfung wie ein getipptes.
 
 Was JARVIS *nicht* lernt: Credential-Material (nie, unabhängig von
 Einstellungen), alles auf der Don't-Learn-Liste, und bei abgeschaltetem Privacy

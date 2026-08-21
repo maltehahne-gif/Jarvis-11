@@ -47,6 +47,17 @@ MEMORY_STORED = "memory.stored"
 MEMORY_DELETED = "memory.deleted"
 MEMORY_ROUTINE_PROPOSED = "memory.routine.proposed"
 
+# --- voice (Blueprint 9) ----------------------------------------------------
+VOICE_WAKE = "voice.wake.detected"
+VOICE_TRANSCRIPT = "voice.transcript.final"
+VOICE_SPEAKING_STARTED = "voice.speaking.started"
+VOICE_SPEAKING_FINISHED = "voice.speaking.finished"
+VOICE_BARGE_IN = "voice.barge_in"
+#: An answer that was not spoken aloud - sensitive content with no private
+#: speaker available, or silent mode (Blueprint 9.1).
+VOICE_WITHHELD = "voice.withheld"
+VOICE_MODE_CHANGED = "voice.mode.changed"
+
 # --- scheduler (Blueprint 5.1) ----------------------------------------------
 JOB_REGISTERED = "scheduler.job.registered"
 JOB_FIRED = "scheduler.job.fired"

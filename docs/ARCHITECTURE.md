@@ -374,14 +374,96 @@ Scheduler arbeitet mit einer Uhr, und eine Routine „nach dem Systemcheck" hät
 nichts, worauf er warten könnte. Einen Job zu registrieren, der nie feuert,
 wäre ein leeres Versprechen.
 
-## 9. Was als Nächstes ansteht
+## 9. Voice Engine (Blueprint 9, 2.1, 10.5)
+
+| Baustein | Datei |
+|---|---|
+| Ports: Wake, STT, TTS, AudioSink | `voice/ports.py` |
+| Personality Contract (9.1) | `voice/personality.py` |
+| Latenz-Budget (9.2) | `voice/latency.py` |
+| Presence und Ausgabewahl | `voice/presence.py` |
+| Streaming-Pipeline mit Barge-in | `voice/pipeline.py` |
+| Mocks für Entwicklung und Tests | `voice/mock.py` |
+
+### Keine serielle Blockkette
+
+Abbildung 4 sagt es ausdrücklich, und drei Dinge passieren deshalb in
+unerwarteter Reihenfolge:
+
+1. **Das Ack feuert zuerst** — vor Transkription, vor Routing, vor allem
+   anderen. 9.2 gibt 250 ms für „wahrgenommenes Feedback"; keine Pipeline, die
+   auf ein Transkript wartet, schafft das. Gemessen: **0,02 ms**, während die
+   Transkription noch lief.
+2. **Intent-Klassifikation läuft auf Partials.** Der Router ist lokal und
+   deterministisch, kostet also fast nichts.
+3. **Sprechen beginnt vor dem fertigen Satz.** TTS verarbeitet Phrasen
+   einzeln.
+
+Barge-in fällt aus (3) heraus: Sprechen ist ein Task über einen Generator,
+Abbruch stoppt Audio an der nächsten Chunk-Grenze. Deshalb ist
+`TextToSpeech.speak` ein Iterator und keine Coroutine.
+
+### Wir setzen die Grenzen, das Modell füllt den Raum darin
+
+9.1 ist Prosa, aber vieles daran ist mechanisch — und Mechanisches gehört in
+Code, nicht in einen Prompt. Eine Regel, die nur im Systemprompt steht, ist
+eine Regel, die das Modell an einem schlechten Tag fallen lässt. „In Notfall,
+Trauer, Medizin, Security oder ernsten Konflikten Humor automatisch auf 0" ist
+nichts, worüber verhandelt wird.
+
+* **Humor-Level** wird hier berechnet und an den Provider gereicht. Witz
+  erzeugen ist Sache des Modells; zu entscheiden, dass jetzt nicht der Moment
+  ist, ist unsere.
+* **No-Filler-Rule** wird nachträglich angewendet — „Natürlich", „Sehr gerne",
+  „Absolut" fallen weg, ob das Modell die Regel befolgt hat oder nicht. Nur am
+  Satzanfang: „das ist natürlich möglich" ist normales Deutsch.
+* **Phrasen-Splitting** trennt an Satzenden immer, an Kommas nur, wenn genug
+  zusammengekommen ist. An jedem Komma zu trennen ist genau, wie Sprache
+  abgehackt klingt.
+* **Einfache Aktionen** bekommen „Erledigt.", im Whisper-Modus einen Sound
+  Cue.
+
+### Die sicherheitsrelevante Stelle: was laut gesagt werden darf
+
+Ein Raumlautsprecher ist ein Broadcast-Gerät. Der Privacy Filter stuft
+Screen-/Kamerabeobachtungen und Fakten über andere Personen als `SECRET` ein,
+der Context Builder hält `SECRET` aus Cloud-Prompts. Es laut im Raum
+auszusprechen würde genau das preisgeben, was beide Schichten schützen — durch
+einen anderen Ausgang.
+
+Also: **`SECRET` braucht ein privates Ausgabegerät.** Ist keins online, bleibt
+JARVIS still und sagt es auf einem Bildschirm. Ein Raumlautsprecher ist kein
+Fallback. Das Zurückhalten wird als dringendes Event gemeldet, damit es kein
+stilles Scheitern ist.
+
+Die Fehlerkosten sind asymmetrisch: einen schlechteren Lautsprecher zu wählen
+kostet Klangqualität, einen geteilten zu wählen kostet die Privatsphäre des
+Besitzers vor allen, die danebenstehen. Alle Tie-Breaks fallen zur sicheren
+Seite.
+
+### Sprache ist eine Eingabe, keine Vollmacht
+
+Blueprint 7.2: Voice-ID ist „Komfortsignal, kein alleiniger Authenticator".
+Die Pipeline reicht Text an `handle_command` und bekommt ein Ergebnis — genau
+wie getippt. Ein gesprochenes „installiere Docker" bleibt BLOCKED, eine
+niedrige Wake-Confidence autorisiert nichts.
+
+### Zielwerte, keine Garantie
+
+9.2 nennt sie so, also meldet das System Verletzungen, statt zu scheitern oder
+still langsamer zu werden. Der Monitor führt ein rollierendes Fenster mit
+Median, Worst Case und Miss-Rate pro Messpunkt.
+
+## 10. Was als Nächstes ansteht
 
 Nach Prinzip 5 („build core before spectacle") und in dieser Reihenfolge:
 
 1. **Live-Verifikation des Claude Agent SDK Providers**, sobald Auth
    geklärt ist. Damit wird auch der Delegationsschritt im Planner echt.
-2. **Event-getriggerte Routinen** — `AFTER`-Trigger brauchen einen
+2. **Echte Wake-/STT-/TTS-Engines** hinter den Ports — auf Geräten mit
+   Mikrofon. Blueprint 9.3 nennt Home Assistant mit microWakeWord als
+   Prototyping-Pfad; iOS braucht Push-to-talk als Fallback.
+3. **Event-getriggerte Routinen** — `AFTER`-Trigger brauchen einen
    Event-Watcher neben dem uhrbasierten Scheduler.
-3. **Vector Search / pgvector**, sobald über Embeddings entschieden ist.
-4. **Voice Engine** (Blueprint 9) — Wake Word, Streaming STT/TTS, Barge-in.
+4. **Vector Search / pgvector**, sobald über Embeddings entschieden ist.
 5. **HUD** (Blueprint 3) — erst danach.
