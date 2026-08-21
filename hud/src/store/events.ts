@@ -16,7 +16,16 @@
 import { create } from "zustand";
 import { EventSocket, type ConnectionState } from "../api/ws";
 import { api } from "../api/client";
-import type { CoreStatus, JarvisEvent, Mission, MissionProgress, PendingApproval } from "../types/api";
+import type {
+  AuditSnapshot,
+  Capability,
+  CoreStatus,
+  JarvisEvent,
+  Mission,
+  MissionProgress,
+  PendingApproval,
+  SchedulerSnapshot,
+} from "../types/api";
 
 export type CoreActivity = "idle" | "listening" | "thinking" | "speaking" | "working";
 
@@ -32,6 +41,9 @@ interface EventState {
   activity: CoreActivity;
   speakingDevice: string | null;
   lastSpokenText: string | null;
+  capabilities: Capability[];
+  scheduler: SchedulerSnapshot | null;
+  audit: AuditSnapshot | null;
 
   connect: () => void;
   refreshStatus: () => Promise<void>;
@@ -42,6 +54,9 @@ interface EventState {
   approve: (approval: PendingApproval) => Promise<void>;
   deny: (fingerprint: string) => Promise<void>;
   resumeMission: (id: string) => Promise<void>;
+  loadCapabilities: () => Promise<void>;
+  refreshScheduler: () => Promise<void>;
+  refreshAudit: () => Promise<void>;
 }
 
 let socket: EventSocket | null = null;
@@ -89,6 +104,19 @@ function isMissionEvent(type: string): boolean {
   return type.startsWith("mission.");
 }
 
+// Scheduler and safety events are the ones System mode's job list and
+// alerts derive from - a job firing, succeeding, retrying, being parked or
+// exhausted, or the kill switch / watchdog tripping. Refetching the whole
+// snapshot on each is simpler and cheap enough at this event rate; there is
+// no separate "job changed" partial update to merge.
+function touchesScheduler(type: string): boolean {
+  return type.startsWith("scheduler.job.");
+}
+
+function touchesSafety(type: string): boolean {
+  return type.startsWith("safety.");
+}
+
 export const useEventStore = create<EventState>((set, get) => ({
   connection: "closed",
   events: [],
@@ -99,6 +127,9 @@ export const useEventStore = create<EventState>((set, get) => ({
   activity: "idle",
   speakingDevice: null,
   lastSpokenText: null,
+  capabilities: [],
+  scheduler: null,
+  audit: null,
 
   connect: () => {
     if (socket) return;
@@ -126,11 +157,21 @@ export const useEventStore = create<EventState>((set, get) => ({
         if (event.type.startsWith("permission.") || event.type.startsWith("mission.approval")) {
           void get().refreshStatus();
         }
+        if (touchesScheduler(event.type)) {
+          void get().refreshScheduler();
+        }
+        if (touchesSafety(event.type)) {
+          void get().refreshStatus();
+          void get().refreshAudit();
+        }
       },
       (connection) => set({ connection }),
     );
     socket.connect();
     void get().refreshStatus();
+    void get().loadCapabilities();
+    void get().refreshScheduler();
+    void get().refreshAudit();
   },
 
   refreshStatus: async () => {
@@ -194,5 +235,20 @@ export const useEventStore = create<EventState>((set, get) => ({
     await api.resumeMission(id);
     await get().refreshMission(id);
     await get().refreshMissionProgress(id);
+  },
+
+  loadCapabilities: async () => {
+    const capabilities = await api.capabilities().catch(() => null);
+    if (capabilities) set({ capabilities });
+  },
+
+  refreshScheduler: async () => {
+    const scheduler = await api.scheduler().catch(() => null);
+    if (scheduler) set({ scheduler });
+  },
+
+  refreshAudit: async () => {
+    const audit = await api.audit().catch(() => null);
+    if (audit) set({ audit });
   },
 }));

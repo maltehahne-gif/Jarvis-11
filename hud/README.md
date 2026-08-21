@@ -1,10 +1,10 @@
 # JARVIS HUD
 
 The visual HUD from Blueprint 3 - a web frontend for the Core's local API and
-WebSocket. Currently two of the eight modes from 3.2 are built: **Idle** and
-**Mission**. The rest (News, Coding, Smart Home, System, Research) are later
-increments with their own data sources; see `docs/ARCHITECTURE.md` at the repo
-root for the full picture.
+WebSocket. Currently three of the eight modes from 3.2 are built: **Idle**,
+**Mission** and **System**. The rest (News, Coding, Smart Home, Research) are
+later increments with their own data sources; see `docs/ARCHITECTURE.md` at
+the repo root for the full picture.
 
 ## Running it
 
@@ -37,7 +37,8 @@ src/
   store/      zustand store - the seam between the live stream and components
   hooks/      useAnimationFrame - a render loop that never touches the network
   theme/      design tokens (Blueprint 3.1) + shared layout CSS
-  components/ CoreOrb, DebugOverlay, IdleMode, MissionMode + mission/*
+  components/ CoreOrb, DebugOverlay, IdleMode, MissionMode + mission/*,
+              SystemMode + system/*
   types/      TypeScript types mirroring the Core's `to_dict()` JSON exactly
 ```
 

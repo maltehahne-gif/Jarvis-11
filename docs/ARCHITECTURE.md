@@ -457,10 +457,10 @@ Median, Worst Case und Miss-Rate pro Messpunkt.
 ## 10. HUD (Blueprint 3)
 
 `hud/` — ein React + TypeScript + Vite-Frontend gegen die lokale API und den
-WebSocket. Zwei der acht Modi aus 3.2 stehen: **Idle** und **Mission**. Die
-übrigen sechs (News, Coding, Smart Home, System, Research) sind spätere
-Schritte mit eigenen Datenquellen; siehe `hud/README.md` für Struktur und
-Testbefehle.
+WebSocket. Drei der acht Modi aus 3.2 stehen: **Idle**, **Mission** und
+**System**. Die übrigen fünf (News, Coding, Smart Home, Research) sind
+spätere Schritte mit eigenen Datenquellen; siehe `hud/README.md` für Struktur
+und Testbefehle.
 
 ### Noch kein Tauri
 
@@ -516,6 +516,31 @@ einer fortlaufenden Sequenznummer pro Missions-ID, sodass eine veraltete
 Antwort eine frischere nie überschreiben kann — mit Vitest-Test
 (`store/events.test.ts`) gegen genau dieses Wettrennen abgesichert.
 
+### System-Modus braucht keine neue Backend-Fläche
+
+3.2 verlangt für System „PC/Netzwerk/Service-Topologie, Load, Health, Alerts".
+Alle vier Facetten lassen sich aus bereits vorhandenen Endpunkten ableiten —
+`/status` (Geräte, Kill Switch), `/capabilities` (Services samt `health`),
+`/scheduler` (Job-Load und -Health) und `/audit` (Kettenintegrität,
+Watchdog-Einträge) —, deshalb kam für diesen Modus kein einziges neues
+Backend-Feld hinzu.
+
+Die Alerts-Liste ist bewusst rein abgeleitet statt eines eigenen
+Server-Felds: Kill Switch aktiv, Audit-Kette gebrochen, ein
+Watchdog-Audit-Eintrag, ein Scheduler-Job mit `last_outcome: failed` (bei
+erschöpften Versuchen zusätzlich als `danger` statt `warn`), oder eine
+Mission in FAILED/BLOCKED. Ein System ohne eines dieser Signale zeigt „Keine
+aktiven Alerts" — nicht, weil das UI das annimmt, sondern weil keine der
+Bedingungen zutrifft. Damit bleibt Blueprint 7.3s Verbot erfüllt, dass die
+Oberfläche einen Zustand vortäuscht.
+
+Ein Live-Test gegen den laufenden Core deckte dabei einen reinen
+Typ-Fehler auf: `Capability.level` und `Scheduler.snapshot().max_unattended_level`
+liefern `PermissionLevel.code` — also den String `"P3"`, nicht die
+Ganzzahl des Enums. Der erste Typentwurf hatte `number` angenommen; ein
+`curl` gegen `/capabilities` und `/scheduler` zeigte den echten JSON-Shape,
+der TypeScript-Typ wurde entsprechend korrigiert.
+
 ## 11. Was als Nächstes ansteht
 
 Nach Prinzip 5 („build core before spectacle") und in dieser Reihenfolge:
@@ -526,7 +551,7 @@ Nach Prinzip 5 („build core before spectacle") und in dieser Reihenfolge:
    Mikrofon. Blueprint 9.3 nennt Home Assistant mit microWakeWord als
    Prototyping-Pfad; iOS braucht Push-to-talk als Fallback.
 3. **Weitere HUD-Modi** — News (3D-Globus), Coding (Monaco), Smart Home
-   (Digital Twin), System, Research.
+   (Digital Twin), Research.
 4. **Event-getriggerte Routinen** — `AFTER`-Trigger brauchen einen
    Event-Watcher neben dem uhrbasierten Scheduler.
 5. **Vector Search / pgvector**, sobald über Embeddings entschieden ist.

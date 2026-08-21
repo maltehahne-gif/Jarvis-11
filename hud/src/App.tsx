@@ -1,9 +1,9 @@
 /**
  * The app shell - mode switching per Blueprint 3.2.
  *
- * Only the two modes built so far (Idle, Mission) are wired up; the rest of
- * the table (News, Coding, Smart Home, System, Research) are later
- * increments with their own data sources. Adding one means adding a case
+ * Only the three modes built so far (Idle, Mission, System) are wired up;
+ * the rest of the table (News, Coding, Smart Home, Research) are later
+ * increments needing their own data sources. Adding one means adding a case
  * here and a component next to `MissionMode.tsx` - the socket, the store and
  * the debug overlay are already shared infrastructure.
  */
@@ -12,13 +12,15 @@ import { useEffect, useState } from "react";
 import { useEventStore } from "./store/events";
 import { IdleMode } from "./components/IdleMode";
 import { MissionMode } from "./components/MissionMode";
+import { SystemMode } from "./components/SystemMode";
 import { DebugOverlay } from "./components/DebugOverlay";
 
-type Mode = "idle" | "mission";
+type Mode = "idle" | "mission" | "system";
 
 const MODES: { id: Mode; label: string }[] = [
   { id: "idle", label: "Idle" },
   { id: "mission", label: "Mission" },
+  { id: "system", label: "System" },
 ];
 
 export default function App() {
@@ -55,6 +57,7 @@ export default function App() {
       <div className="app-shell__content">
         {mode === "idle" && <IdleMode activity={activity} />}
         {mode === "mission" && <MissionMode />}
+        {mode === "system" && <SystemMode />}
       </div>
 
       <DebugOverlay />

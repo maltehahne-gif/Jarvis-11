@@ -9,7 +9,15 @@
  * `store/events.ts`.
  */
 
-import type { CoreStatus, Mission, MissionProgress, PendingApproval } from "../types/api";
+import type {
+  AuditSnapshot,
+  Capability,
+  CoreStatus,
+  Mission,
+  MissionProgress,
+  PendingApproval,
+  SchedulerSnapshot,
+} from "../types/api";
 
 const BASE_URL = import.meta.env.VITE_JARVIS_API ?? "http://127.0.0.1:8765";
 
@@ -60,6 +68,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ fingerprint }),
     }),
+
+  capabilities: () => request<Capability[]>("/capabilities"),
+  scheduler: () => request<SchedulerSnapshot>("/scheduler"),
+  audit: (limit = 100) => request<AuditSnapshot>(`/audit?limit=${limit}`),
 };
 
 export type { PendingApproval };

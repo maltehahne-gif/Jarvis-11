@@ -14,8 +14,8 @@ Checkpoints, Scheduler und Watchdog. Dazu die Voice Engine (9) als
 Streaming-Pipeline mit Personality Contract, Latenz-Budget und
 Presence-Routing; echte Wake-/STT-/TTS-Engines treten hinter die Ports, sobald
 ein Gerät mit Mikrofon dran ist. Claude-Agent-SDK-Provider steht hinter dem
-Intelligence-Port (6.2). Dazu ein HUD-Frontend ([`hud/`](hud/)) mit Idle- und
-Mission-Modus; sechs weitere Modi und der 3D-Globus folgen. Architektur und
+Intelligence-Port (6.2). Dazu ein HUD-Frontend ([`hud/`](hud/)) mit Idle-,
+Mission- und System-Modus; fünf weitere Modi und der 3D-Globus folgen. Architektur und
 getroffene Entscheidungen: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Die fünf nicht verhandelbaren Prinzipien

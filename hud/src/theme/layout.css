@@ -423,3 +423,251 @@ button:hover {
   font-size: 12px;
   padding: var(--space-4);
 }
+
+/* -- system mode ------------------------------------------------------------ */
+
+.system-mode {
+  height: 100%;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: auto 1fr;
+  grid-template-areas:
+    "alerts alerts alerts"
+    "devices services scheduler";
+  gap: 1px;
+  background: var(--border-hairline);
+}
+
+.system-mode section {
+  background: var(--bg-panel);
+  padding: var(--space-4);
+  overflow-y: auto;
+}
+
+.system-mode h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-tertiary);
+  margin: 0 0 var(--space-3);
+}
+
+.system-mode__alerts {
+  grid-area: alerts;
+}
+.system-mode__devices {
+  grid-area: devices;
+}
+.system-mode__services {
+  grid-area: services;
+}
+.system-mode__scheduler {
+  grid-area: scheduler;
+}
+
+/* -- alerts ------------------------------------------------------------ */
+
+.alerts-panel {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.alerts-panel__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.alerts-panel__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.alerts-panel__item--warn .alerts-panel__dot {
+  background: var(--warn);
+}
+.alerts-panel__item--danger .alerts-panel__dot {
+  background: var(--danger);
+}
+.alerts-panel__item--danger {
+  color: var(--danger);
+}
+
+/* -- device grid ------------------------------------------------------------ */
+
+.device-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.device-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel-raised);
+}
+
+.device-card__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  flex-shrink: 0;
+}
+.device-card__dot.is-online {
+  background: var(--ok);
+}
+
+.device-card__id {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.device-card__trust {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+/* -- service table ------------------------------------------------------------ */
+
+.service-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.service-table th {
+  text-align: left;
+  color: var(--text-tertiary);
+  font-weight: 400;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0 var(--space-2) var(--space-2);
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.service-table td {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border-hairline);
+  vertical-align: top;
+}
+
+.service-table__name {
+  color: var(--text-primary);
+}
+
+.service-table__level {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.service-table__health {
+  font-size: 11px;
+  text-transform: capitalize;
+}
+.service-table__health--healthy {
+  color: var(--ok);
+}
+.service-table__health--degraded {
+  color: var(--warn);
+}
+.service-table__health--unavailable {
+  color: var(--danger);
+}
+
+.service-table__flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.flag-pill {
+  font-size: 10px;
+  color: var(--cyan);
+  border: 1px solid var(--cyan-dim);
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+}
+
+/* -- scheduler panel ------------------------------------------------------------ */
+
+.scheduler-panel__summary {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-3);
+}
+
+.scheduler-panel__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.scheduler-job {
+  padding: var(--space-2);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel-raised);
+}
+
+.scheduler-job[data-enabled="false"] {
+  opacity: 0.6;
+}
+
+.scheduler-job__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.scheduler-job__name {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scheduler-job__outcome {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.scheduler-job__outcome--failed {
+  color: var(--danger);
+}
+.scheduler-job__outcome--parked {
+  color: var(--warn);
+}
+.scheduler-job__outcome--refused {
+  color: var(--warn);
+}
+.scheduler-job__outcome--succeeded {
+  color: var(--ok);
+}
+
+.scheduler-job__meta {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  margin-top: var(--space-1);
+}
