@@ -27,7 +27,6 @@ from jarvis.agents.coordinator import AgentCoordinator, AgentRun
 from jarvis.agents.factory import build_provider
 from jarvis.agents.provider import IntelligenceProvider
 from jarvis.audit.logger import AuditLogger
-from jarvis.capability.models import ExecutionContext
 from jarvis.capability.registry import CapabilityRegistry
 from jarvis.config import CoreConfig
 from jarvis.context.builder import ContextBuilder, Destination
@@ -645,15 +644,26 @@ class JarvisCore:
             confirmation=str(confirmation),
         )
 
+        # Resume the plan rather than calling the gateway once directly. A
+        # plan can have steps after the one that needed confirmation, and this
+        # is what carries on to them - the same reason `resume_mission` uses
+        # the runner instead of a single gateway call. It also means the
+        # approved task's own state actually reaches DONE/FAILED, which a
+        # bare `gateway.execute()` here never touched, leaving the task stuck
+        # on PENDING under a COMPLETED mission.
+        #
+        # No fresh grant is issued: the mission's grant from when the plan
+        # started is still active (`_settle_run` only releases it once the
+        # mission leaves WAITING_FOR_APPROVAL), and the Permission Engine
+        # unions it into every check regardless of what `grants` a call
+        # passes. Approval only had to clear the confirmation gate, which
+        # `approvals.grant` above already did.
         await self.missions.transition(mission, MissionState.RUNNING, "owner approved")
-        context = ExecutionContext(
-            correlation_id=mission.correlation_id,
-            mission_id=mission.mission_id,
-            device_id=device_id,
-            actor="owner",
+        await self.state.mark_active(mission.mission_id)
+        outcome = await self.runner.run(
+            mission, grants=frozenset(), device_id=device_id, actor="owner"
         )
-        result = await self.gateway.execute(pending["capability"], pending["params"], context)
-        return await self._settle(mission, result=result, task_note="approved")
+        return await self._settle_run(mission, outcome)
 
     async def deny(self, fingerprint: str) -> CommandResult:
         pending = next(

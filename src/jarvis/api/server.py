@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -185,6 +186,19 @@ def create_app(core: JarvisCore | None = None, config: CoreConfig | None = None)
 
     app = FastAPI(title="JARVIS Core", version="0.1.0", lifespan=lifespan)
     app.state.core = core
+
+    # The API stays bound to loopback (see module docstring); this only lets a
+    # dev server on another *local* port - the HUD's `npm run dev`, typically
+    # localhost:5173 - talk to it. It is not a grant for remote access, and it
+    # is not needed once the HUD is served from this same origin in a real
+    # build.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     # -- debug dashboard (DoD 5.4: nothing more than this) -----------------
 

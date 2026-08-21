@@ -788,6 +788,92 @@ class TestScheduler:
 
 
 # --------------------------------------------------------------------------
+# Approval continues the plan, not just the one approved step
+# --------------------------------------------------------------------------
+
+
+class TestApprovalContinuesThePlan:
+    """`core.approve()` must resume the Mission Runner, not call the gateway
+    once and stop.
+
+    A plan can have steps after the one that needed confirmation, and the
+    approved task's own state has to reach DONE - not stay PENDING under a
+    mission the API reports as COMPLETED. Both were broken by an approve()
+    that pre-dated the Planner: it called the gateway directly for the one
+    pending capability and never touched the task list or the rest of the
+    plan.
+    """
+
+    async def test_a_later_step_runs_after_approval(self, core: JarvisCore):
+        mission = await core.missions.create("multi-step with a gate in the middle")
+        await core.missions.transition(mission, MissionState.PLANNING)
+        plan = Plan(
+            goal="multi-step",
+            steps=(
+                step("first", "system.status"),
+                step(
+                    "gated",
+                    "comms.send_message",
+                    params={"to": "anna", "body": "hi"},
+                    depends_on=("first",),
+                ),
+                step(
+                    "after",
+                    "home.set_light",
+                    params={"room": "office", "state": "on"},
+                    depends_on=("gated",),
+                ),
+            ),
+        )
+        for task in plan.to_tasks():
+            mission.add_task(task)
+
+        core.permissions.issue_grant(
+            mission.mission_id, frozenset({"*"}), grants=frozenset({"comms"})
+        )
+        core.gateway.budgets.start(mission.mission_id, Budget())
+        await core.missions.transition(mission, MissionState.RUNNING)
+
+        outcome = await core.runner.run(mission)
+        assert outcome.pending_approval is not None
+        assert core.world.lights["office"] != "on"
+
+        # Mirror what `_handle_planned` does after a run: settle the mission
+        # into WAITING_FOR_APPROVAL before the owner acts on it.
+        await core._settle_run(mission, outcome)
+        assert mission.state is MissionState.WAITING_FOR_APPROVAL
+
+        settled = await core.approve(outcome.pending_approval["fingerprint"])
+
+        assert settled.mission_state == str(MissionState.COMPLETED)
+        assert any(m["to"] == "anna" for m in core.world.outbox)
+        # The step after the gate ran too - approval did not stop at the
+        # approved step.
+        assert core.world.lights["office"] == "on"
+
+        # `approve()` loads its own copy of the mission from the store, so
+        # check the persisted truth rather than this test's now-stale local
+        # object.
+        reloaded = await core.missions.load(mission.mission_id)
+        assert [t.state for t in reloaded.tasks] == [
+            TaskState.DONE,
+            TaskState.DONE,
+            TaskState.DONE,
+        ]
+
+    async def test_progress_reflects_the_approved_task_as_done(self, core: JarvisCore):
+        first = await core.handle_command(
+            "Nachricht an anna: bin unterwegs", grants=frozenset({"comms"})
+        )
+        approved = await core.approve(first.pending_approval["fingerprint"])
+
+        mission = await core.missions.load(approved.mission_id)
+        progress = core.runner.progress(mission)
+        assert progress["tasks_done"] == progress["tasks_total"] == 1
+        assert progress["fraction_done"] == 1.0
+
+
+# --------------------------------------------------------------------------
 # Approved routines actually firing - closing the Blueprint 8.3 gap
 # --------------------------------------------------------------------------
 

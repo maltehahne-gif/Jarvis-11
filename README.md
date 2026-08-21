@@ -14,8 +14,9 @@ Checkpoints, Scheduler und Watchdog. Dazu die Voice Engine (9) als
 Streaming-Pipeline mit Personality Contract, Latenz-Budget und
 Presence-Routing; echte Wake-/STT-/TTS-Engines treten hinter die Ports, sobald
 ein Gerät mit Mikrofon dran ist. Claude-Agent-SDK-Provider steht hinter dem
-Intelligence-Port (6.2). Noch ohne HUD oder 3D. Architektur und getroffene
-Entscheidungen: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Intelligence-Port (6.2). Dazu ein HUD-Frontend ([`hud/`](hud/)) mit Idle- und
+Mission-Modus; sechs weitere Modi und der 3D-Globus folgen. Architektur und
+getroffene Entscheidungen: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Die fünf nicht verhandelbaren Prinzipien
 
@@ -35,13 +36,20 @@ Entscheidungen: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -e ".[dev]"
 
-.venv/bin/python -m pytest          # 411 Tests
+.venv/bin/python -m pytest          # 413 Tests
 .venv/bin/python -m jarvis          # http://127.0.0.1:8765
 ```
 
 Das Debug-Dashboard unter `/` zeigt Kommandoeingabe, Live-Event-Stream,
 Missionsstatus, offene Freigaben, die Capability-Tabelle mit Risiko-Leveln und
 „What JARVIS Knows" mit Privacy-Schaltern und Routine-Vorschlägen.
+
+Für das HUD (siehe [`hud/README.md`](hud/README.md)) zusätzlich, bei
+laufendem Core:
+
+```bash
+cd hud && npm install && npm run dev   # http://localhost:5173
+```
 
 ## Ausprobieren
 

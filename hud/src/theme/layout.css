@@ -1,0 +1,425 @@
+/* Shared layout, panel and control styling. Component-specific motion lives
+   next to its component (see CoreOrb.css); this file is the instrument-panel
+   chrome everything sits inside. */
+
+.app-shell {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-shell__content {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
+}
+
+.mode-switcher {
+  position: fixed;
+  top: var(--space-4);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  display: flex;
+  gap: var(--space-1);
+  background: var(--bg-panel-transparent);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-md);
+  padding: var(--space-1);
+  backdrop-filter: blur(8px);
+}
+
+.mode-switcher__btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--motion-fast) var(--ease-out), background var(--motion-fast) var(--ease-out);
+}
+
+.mode-switcher__btn:hover {
+  color: var(--text-primary);
+}
+
+.mode-switcher__btn.is-active {
+  color: var(--amber);
+  background: rgba(255, 176, 61, 0.08);
+}
+
+.debug-overlay {
+  position: fixed;
+  bottom: var(--space-3);
+  right: var(--space-4);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  background: var(--bg-panel-transparent);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+}
+
+.debug-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.debug-sep {
+  opacity: 0.4;
+}
+
+/* -- idle mode -------------------------------------------------------------- */
+
+.idle-mode {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-6);
+}
+
+.idle-mode__clock {
+  font-size: 28px;
+  color: var(--text-secondary);
+  letter-spacing: 0.06em;
+}
+
+.idle-mode__hint {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+/* -- mission mode ------------------------------------------------------------ */
+
+.mission-mode {
+  height: 100%;
+  display: grid;
+  grid-template-columns: 260px 1fr 280px;
+  gap: 1px;
+  background: var(--border-hairline);
+}
+
+.mission-mode__sidebar,
+.mission-mode__main,
+.mission-mode__approvals {
+  background: var(--bg-panel);
+  padding: var(--space-4);
+  overflow-y: auto;
+}
+
+.mission-mode__sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.mission-mode__core {
+  display: flex;
+  justify-content: center;
+}
+
+.mission-mode__command {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.mission-mode__command input {
+  flex: 1;
+  min-width: 0;
+}
+
+.mission-mode__header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.mission-mode__header h2 {
+  font-size: 16px;
+  font-weight: 500;
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mission-mode__state {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.mission-mode__tree-wrap {
+  overflow: auto;
+  margin-top: var(--space-4);
+}
+
+.mission-mode__approvals h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-tertiary);
+  margin: 0 0 var(--space-3);
+}
+
+/* -- mission list ------------------------------------------------------------ */
+
+.mission-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.mission-list__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  text-align: left;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-family: var(--font-ui);
+}
+
+.mission-list__item:hover {
+  background: var(--bg-panel-raised);
+}
+
+.mission-list__item.is-selected {
+  border-color: var(--border-focus);
+  background: var(--bg-panel-raised);
+  color: var(--text-primary);
+}
+
+.mission-list__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-tertiary);
+}
+.mission-list__dot--ok {
+  background: var(--ok);
+}
+.mission-list__dot--warn {
+  background: var(--warn);
+}
+.mission-list__dot--danger {
+  background: var(--danger);
+}
+
+.mission-list__goal {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.mission-list__state {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+/* -- mission tree ------------------------------------------------------------ */
+
+.mission-tree {
+  position: relative;
+}
+
+.mission-tree__edges {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.mission-tree__edge {
+  stroke: var(--cyan-dim);
+  stroke-width: 1;
+  opacity: 0.5;
+}
+
+.mission-tree__node {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: var(--bg-panel-raised);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2);
+}
+
+.mission-tree__node[data-state="RUNNING"] {
+  border-color: var(--border-focus);
+}
+.mission-tree__node[data-state="FAILED"] {
+  border-color: rgba(255, 92, 92, 0.4);
+}
+
+.mission-tree__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.mission-tree__body {
+  min-width: 0;
+}
+
+.mission-tree__desc {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mission-tree__meta {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+/* -- health -------------------------------------------------------------- */
+
+.mission-health__bar {
+  height: 4px;
+  background: var(--bg-panel-raised);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.mission-health__fill {
+  height: 100%;
+  transition: width var(--motion-medium) var(--ease-out);
+}
+.mission-health__fill--ok {
+  background: var(--ok);
+}
+.mission-health__fill--warn {
+  background: var(--warn);
+}
+.mission-health__fill--danger {
+  background: var(--danger);
+}
+
+.mission-health__stats {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: var(--space-2);
+}
+
+.text-danger {
+  color: var(--danger);
+}
+
+/* -- approvals ------------------------------------------------------------ */
+
+.approval-card {
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+  background: var(--bg-panel-raised);
+}
+
+.approval-card__capability {
+  color: var(--amber);
+  font-size: 12px;
+}
+
+.approval-card__params {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  margin-top: var(--space-1);
+  word-break: break-all;
+}
+
+.approval-card__confirmation {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: var(--space-2);
+}
+
+.approval-card__actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+/* -- controls -------------------------------------------------------------- */
+
+input[type="text"],
+.mission-mode__command input {
+  background: var(--bg-panel-raised);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-ui);
+  font-size: 13px;
+}
+
+input:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
+button,
+.btn {
+  appearance: none;
+  border: 1px solid var(--border-hairline);
+  background: var(--bg-panel-raised);
+  color: var(--text-primary);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color var(--motion-fast) var(--ease-out);
+}
+
+button:hover {
+  border-color: var(--border-focus);
+}
+
+.btn--ok {
+  border-color: rgba(86, 217, 143, 0.4);
+  color: var(--ok);
+}
+.btn--danger {
+  border-color: rgba(255, 92, 92, 0.4);
+  color: var(--danger);
+}
+
+.panel-empty {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  padding: var(--space-4);
+}

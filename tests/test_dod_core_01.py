@@ -27,7 +27,7 @@ from jarvis.core import JarvisCore
 from jarvis.events import types as ev
 from jarvis.execution.gateway import ExecutionOutcome
 from jarvis.intent.router import Route
-from jarvis.mission.model import MissionState
+from jarvis.mission.model import MissionState, TaskState
 
 
 class TestCriterion1LocalApi:
@@ -130,6 +130,17 @@ class TestCriterion3PermissionEngine:
         approved = await core.approve(first.pending_approval["fingerprint"])
         assert approved.mission_state == str(MissionState.COMPLETED)
         assert any(m["to"] == "anna" for m in core.world.outbox)
+
+        # The task itself must reach DONE, not just the mission as a whole -
+        # a stale PENDING task under a COMPLETED mission is exactly the kind
+        # of inconsistency the HUD's progress bar would otherwise report as
+        # "0/1 done" on a finished mission.
+        mission = await core.missions.load(approved.mission_id)
+        assert [t.state for t in mission.tasks] == [TaskState.DONE]
+
+        progress = core.runner.progress(mission)
+        assert progress["tasks_done"] == 1
+        assert progress["fraction_done"] == 1.0
 
     async def test_denial_cancels_the_mission_and_sends_nothing(self, core: JarvisCore):
         first = await core.handle_command(

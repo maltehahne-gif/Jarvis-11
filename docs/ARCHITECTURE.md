@@ -454,7 +454,69 @@ niedrige Wake-Confidence autorisiert nichts.
 still langsamer zu werden. Der Monitor führt ein rollierendes Fenster mit
 Median, Worst Case und Miss-Rate pro Messpunkt.
 
-## 10. Was als Nächstes ansteht
+## 10. HUD (Blueprint 3)
+
+`hud/` — ein React + TypeScript + Vite-Frontend gegen die lokale API und den
+WebSocket. Zwei der acht Modi aus 3.2 stehen: **Idle** und **Mission**. Die
+übrigen sechs (News, Coding, Smart Home, System, Research) sind spätere
+Schritte mit eigenen Datenquellen; siehe `hud/README.md` für Struktur und
+Testbefehle.
+
+### Noch kein Tauri
+
+Blueprint 4.3 nennt Tauri 2 als nativen Desktop-/Mobile-Shell. Tauri braucht
+System-Bibliotheken (GTK/webkit2gtk unter Linux), die in dieser
+Container-Umgebung fehlen. Das HUD ist deshalb vorerst eine reine Web-App,
+verifiziert wie das Debug-Dashboard bisher — per Playwright im echten
+Browser. Tauri wird ein dünner Wrapper-Schritt, sobald eine Umgebung mit
+diesen Bibliotheken verfügbar ist; die Web-App darunter ändert sich nicht.
+
+### Fluidity ist strukturell, nicht nur ein Zielwert
+
+3.3 verlangt, dass keine Animation, Eingabe oder Scroll-Aktion auf eine
+Claude-Anfrage wartet. `useAnimationFrame` treibt jede Bewegung aus
+`requestAnimationFrame` und liest dabei nur bereits geladenen Zustand —
+niemals `await`. Der FPS-Zähler im Debug-Overlay läuft über denselben Hook:
+wäre der Renderloop je heimlich blockiert, würde der Zähler einbrechen, statt
+lügenhaft bei 60 einzufrieren.
+
+Der Central-AI-Core-Kreis (Listening/Thinking/Speaking/Working) animiert rein
+über CSS, gesteuert durch ein `data-activity`-Attribut — das hält die
+Bewegung auf dem Compositor-Thread und macht sie immun gegen einen
+beschäftigten Hauptthread.
+
+### Der Goal Tree ist eine echte Darstellung des Plans
+
+Positionen im Mission-Modus kommen direkt aus `Plan.waves` — den
+topologischen Ebenen, die der Planner selbst berechnet. Abhängigkeitslinien
+werden aus denselben Daten gezeichnet, keine separate Layout-Vermutung.
+Task-Zustand wird über `step_id` verknüpft, weil `PlanStep.to_task()` genau
+deshalb die Step-ID als Task-ID übernimmt.
+
+### Ein Bug, den der Mission-Modus beim ersten Live-Test aufdeckte
+
+Nach einer Freigabe zeigte die Health-Leiste „0/1 erledigt" bei einer
+COMPLETED-Mission. Kein Frontend-Fehler: `core.approve()` rief seit dem
+Planner-Umbau weiterhin nur einmal `gateway.execute()` für die eine
+freigegebene Capability auf — der Task blieb PENDING, und ein mehrstufiger
+Plan hätte nach dem freigegebenen Schritt einfach aufgehört, obwohl weitere
+Schritte folgten. `approve()` setzt jetzt stattdessen den Mission Runner
+fort (`runner.run()`), genau wie `resume_mission()` es bei einer pausierten
+Mission tut — keine neue Grant nötig, da die Grant der Mission beim
+Verlassen von WAITING_FOR_APPROVAL noch aktiv ist und die Permission Engine
+sie ohnehin mit jeder Prüfung vereinigt. Das schließt auch eine bis dahin
+unbemerkte Lücke: ein mehrstufiger Plan mit einer Bestätigung in der Mitte
+lief vorher nie über den freigegebenen Schritt hinaus.
+
+Ein zweiter, kleinerer Fund beim selben Test: ein Burst von Missions-Events
+(Freigabe erteilt, dann RUNNING, VERIFYING, COMPLETED) löst mehrere parallele
+Progress-Abfragen aus, deren Netzwerk-Antworten nicht garantiert in
+Sende-Reihenfolge zurückkommen. Der Store schützt jetzt jede Anfrage mit
+einer fortlaufenden Sequenznummer pro Missions-ID, sodass eine veraltete
+Antwort eine frischere nie überschreiben kann — mit Vitest-Test
+(`store/events.test.ts`) gegen genau dieses Wettrennen abgesichert.
+
+## 11. Was als Nächstes ansteht
 
 Nach Prinzip 5 („build core before spectacle") und in dieser Reihenfolge:
 
@@ -463,7 +525,9 @@ Nach Prinzip 5 („build core before spectacle") und in dieser Reihenfolge:
 2. **Echte Wake-/STT-/TTS-Engines** hinter den Ports — auf Geräten mit
    Mikrofon. Blueprint 9.3 nennt Home Assistant mit microWakeWord als
    Prototyping-Pfad; iOS braucht Push-to-talk als Fallback.
-3. **Event-getriggerte Routinen** — `AFTER`-Trigger brauchen einen
+3. **Weitere HUD-Modi** — News (3D-Globus), Coding (Monaco), Smart Home
+   (Digital Twin), System, Research.
+4. **Event-getriggerte Routinen** — `AFTER`-Trigger brauchen einen
    Event-Watcher neben dem uhrbasierten Scheduler.
-4. **Vector Search / pgvector**, sobald über Embeddings entschieden ist.
-5. **HUD** (Blueprint 3) — erst danach.
+5. **Vector Search / pgvector**, sobald über Embeddings entschieden ist.
+6. **Tauri-Shell**, sobald eine Umgebung mit GTK/webkit2gtk verfügbar ist.
