@@ -8,10 +8,11 @@ Multi-Agent-Orchestrierung.
 **Source of Truth:** [`docs/JARVIS_Master_Blueprint_1.0.pdf`](docs/JARVIS_Master_Blueprint_1.0.pdf).
 Wo Code und Blueprint sich widersprechen, gewinnt das Blueprint.
 
-**Aktueller Stand:** Core aus Blueprint 5.4, Claude-Agent-SDK-Provider hinter
-dem Intelligence-Port (6.2), sowie Memory und Personalisierung (8) mit Context
-Builder. Noch ohne Voice, HUD oder 3D. Architektur und getroffene
-Entscheidungen: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+**Aktueller Stand:** alle Core-Module aus Blueprint 5.1 sind gebaut — inklusive
+Memory und Personalisierung (8), Context Builder, Planner, Mission Runner mit
+Checkpoints, Scheduler und Watchdog. Claude-Agent-SDK-Provider steht hinter dem
+Intelligence-Port (6.2). Noch ohne Voice, HUD oder 3D. Architektur und
+getroffene Entscheidungen: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Die fünf nicht verhandelbaren Prinzipien
 
@@ -31,7 +32,7 @@ Entscheidungen: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -e ".[dev]"
 
-.venv/bin/python -m pytest          # 266 Tests
+.venv/bin/python -m pytest          # 341 Tests
 .venv/bin/python -m jarvis          # http://127.0.0.1:8765
 ```
 
@@ -70,6 +71,31 @@ curl -s -X POST $J/memory/forget-window -H 'Content-Type: application/json' \
 
 Pro Eintrag: `/memory/{id}/correct`, `/pin`, `/forget`, `/make-temporary`.
 Blockieren mit `/memory/dont-learn`.
+
+## Planen und Zeitsteuerung
+
+```bash
+# Trockenlauf: Plan, Risiko und Budget prüfen, ohne etwas auszuführen
+curl -s -X POST $J/plan -H 'Content-Type: application/json' \
+     -d '{"text":"installiere Docker"}'
+
+# Ein zeitgesteuerter Job
+curl -s -X POST $J/scheduler/jobs -H 'Content-Type: application/json' \
+     -d '{"name":"Abendlicht","goal":"Licht im Living an",
+          "capability":"home.set_light","params":{"room":"living","state":"on"},
+          "kind":"daily","daily_at":"20h"}'
+
+curl -s $J/scheduler                     # Jobs, Versuche, nächster Lauf
+curl -s -X POST $J/scheduler/tick        # jetzt fällige ausführen
+curl -s -X POST $J/watchdog/sweep        # hängende Missionen beenden
+curl -s $J/missions/{id}/progress        # Fortschritt und Checkpoints
+curl -s -X POST $J/missions/{id}/resume  # ab Checkpoint fortsetzen
+```
+
+**Unbeaufsichtigt gilt eine engere Regel als beaufsichtigt.** Ein Job ab P3
+aufwärts führt nichts aus, sondern parkt: die Mission wartet auf deine
+Freigabe, und ein dringendes Event sagt es dir. In einem unbeaufsichtigten
+Kontext kann niemand bestätigen — also bestätigt auch niemand.
 
 Was JARVIS *nicht* lernt: Credential-Material (nie, unabhängig von
 Einstellungen), alles auf der Don't-Learn-Liste, und bei abgeschaltetem Privacy

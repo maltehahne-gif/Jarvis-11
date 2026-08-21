@@ -143,9 +143,17 @@ class TestCriterion3PermissionEngine:
         await core.handle_command("Jarvis, stopp alles")
         assert core.permissions.kill_switch_engaged
 
+        before = dict(core.world.lights)
         blocked = await core.handle_command("Licht im Office an")
-        assert blocked.execution is not None
-        assert blocked.execution.outcome is ExecutionOutcome.DENIED
+
+        # Refused at the door: no mission, no execution, nothing touched.
+        # The Permission Engine would deny it as well - see
+        # test_permission.py::test_engaged_kill_switch_denies_even_p0 - but
+        # the Core declines before it gets that far.
+        assert blocked.extra["refused"] == "kill_switch"
+        assert blocked.execution is None
+        assert blocked.mission_id is None
+        assert core.world.lights == before
 
         await core.handle_command("weitermachen")
         assert not core.permissions.kill_switch_engaged

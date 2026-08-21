@@ -32,21 +32,19 @@ modularer Monolith).
 | Intent Router | `src/jarvis/intent/router.py` | vollständig, deterministisch |
 | Context Builder | `src/jarvis/context/builder.py` | vollständig, mit Sensitivity-Filterung |
 | Mission Engine | `src/jarvis/mission/engine.py` | vollständig inkl. State Machine 5.3 |
-| Memory | `src/jarvis/memory/` | vollständig, Blueprint 8 (siehe Abschnitt 8) |
-| Planner | — | **fehlt**, aktuell plant der Provider einen Schritt pro Turn |
+| Memory | `src/jarvis/memory/` | vollständig, Blueprint 8 (siehe Abschnitt 7) |
+| Planner | `src/jarvis/planner/` | vollständig (siehe Abschnitt 8) |
 | Agent Coordinator | `src/jarvis/agents/coordinator.py` | vollständig inkl. Loop-Kontrolle |
 | Capability Registry | `src/jarvis/capability/registry.py` | vollständig |
 | Permission Engine | `src/jarvis/permission/engine.py` | vollständig, P0–P6 |
 | Execution Gateway | `src/jarvis/execution/gateway.py` | vollständig |
 | Verifier | `src/jarvis/verify/verifier.py` | vollständig |
 | Event Bus | `src/jarvis/events/bus.py` | vollständig, in-process |
-| Scheduler | — | **fehlt**, erst nötig für Background Missions |
+| Scheduler | `src/jarvis/scheduler/` | vollständig (siehe Abschnitt 8) |
 | Model Router | `src/jarvis/routing/model_router.py` | Tabelle aus Blueprint 6.1 |
 | Audit Logger | `src/jarvis/audit/logger.py` | vollständig, hash-verkettet |
 
-Die zwei fehlenden Module sind nicht vergessen: Planner braucht echte
-Mehrschritt-Pläne mit Dependencies, Scheduler braucht Background Missions.
-Beides ist erst sinnvoll, wenn ein echter Reasoner Pläne liefert.
+Alle Module aus der Tabelle in 5.1 sind gebaut.
 
 ---
 
@@ -280,15 +278,110 @@ Entscheidung gefallen ist.
 Procedural Memory. Tatsächlich zeitgesteuert feuern kann sie erst, wenn der
 Scheduler aus 5.1 existiert.
 
-## 8. Was als Nächstes ansteht
+## 8. Planner, Runner, Scheduler und Watchdog (Blueprint 5.1, 6.3, 7.3)
+
+| Baustein | Datei |
+|---|---|
+| Plan-Graph, Zyklus-Erkennung, Wellen | `planner/plan.py` |
+| Planner: Schritte, Agenten, Budget, Risiko | `planner/planner.py` |
+| Checkpoints im Missionsmodell | `mission/model.py` |
+| Mission Runner: DAG, Retry, Heartbeat | `mission/runner.py` |
+| Job-Modell mit Retry/Backoff | `scheduler/jobs.py` |
+| Scheduler | `scheduler/scheduler.py` |
+| Watchdog | `scheduler/watchdog.py` |
+
+### Der Kommandopfad ist jetzt geplant
+
+Ein Kommando läuft über `Planner → Mission Runner`, egal ob es auf eine
+Capability zeigt oder ein offenes Ziel ist. Der Unterschied liegt nur im Plan:
+
+* **eine geroutete Capability** → ein direkter Schritt, ohne Modellaufruf;
+* **ein bekannter Ablauf** aus prozeduralem Memory → mehrere Schritte mit
+  Abhängigkeiten;
+* **sonst** → ein Delegationsschritt an den Agenten.
+
+Alles danach — Abhängigkeiten, Permission-Checks, Checkpoints, Verifikation —
+ist identisch. Genau dafür gibt es einen Plan.
+
+### Risiko und Budget bleiben bei uns
+
+`Planner.assess` ersetzt das Risiko *jedes* Schritts durch das, was die
+Capability Registry sagt. Ein Schritt, der sich selbst als „P0 harmlos"
+deklariert, wird korrigiert — sonst wäre die P0–P6-Tabelle Dekoration
+(Prinzip 2). Ein Plan ist so gefährlich wie sein gefährlichster Schritt;
+Mitteln würde eine kritische Aktion hinter neun harmlosen verstecken.
+
+Passt ein Plan nicht ins Budget, wird er abgelehnt, bevor er beginnt — besser
+als ihn halbfertig scheitern zu lassen.
+
+### Zyklen sterben zur Planzeit
+
+Ein Plan mit Abhängigkeitskreis würde nicht laut scheitern, sondern nie
+bereit werden — die Mission stünde in RUNNING, bis ein Budget abläuft. Da
+Pläne aus Memory oder von einem Modell kommen können, prüft `Plan.__post_init__`
+mit Kahns Algorithmus, bevor ein einziger Schritt läuft.
+
+### Checkpoints sind der Retry-Mechanismus
+
+Nach jedem Schritt wird der Fortschritt persistiert. Ein Lauf, der stoppt —
+Absturz, Kill Switch, erschöpftes Budget — nimmt beim Fortsetzen nur den Rest
+auf. Es braucht keinen zweiten Zähler: erledigte Tasks sind keine bereiten
+Tasks. Ein Schritt, der als RUNNING zurückblieb, geht auf PENDING zurück und
+durchläuft die Permission-Prüfung erneut.
+
+Ein Schritt, dessen Vorgänger fehlschlug, wird SKIPPED statt PENDING. PENDING
+würde behaupten, es sei noch Arbeit offen.
+
+### Die zentrale Scheduler-Regel
+
+> Unbeaufsichtigte Ausführung darf nie mehr dürfen als beaufsichtigte.
+
+Blueprint 7.1 staffelt Aktionen danach, wie viel Bestätigung sie brauchen —
+P3 „Bestätigung je Kontext", P4 „starke Bestätigung / biometrisch". Ein
+unbeaufsichtigter Kontext ist genau der, in dem niemand bestätigen kann. Ein
+Job ab P2 aufwärts **parkt** deshalb: die Mission bleibt in
+WAITING_FOR_APPROVAL, ein URGENT-Event geht raus, und der Besitzer entscheidet,
+wenn er das nächste Mal hinsieht. Stilles Ausführen würde den Scheduler zu
+einem Weg machen, P4-Aktionen an der Rechtetabelle vorbeizuschleusen; stilles
+Verwerfen wäre ein gebrochenes Versprechen.
+
+Dazu: Rechte werden zur Feuerzeit nie erweitert, und der Kill Switch stoppt
+den Scheduler, nicht nur laufende Arbeit.
+
+Parken ist kein Fehlschlag — es bekommt keinen Backoff. Der Job ist nicht
+kaputt, er wartet.
+
+### Watchdog
+
+Budgets werden *zwischen* Schritten geprüft, das fängt eine Schleife. Es fängt
+keinen einzelnen Schritt, der nie zurückkehrt. Dann bliebe die Mission ewig
+RUNNING, und ein HUD mit ewiger Aktivität ist schlimmer als eines mit einem
+Fehler — es täuscht Status vor, was 7.3 als eigenes Risiko nennt. Der Watchdog
+beobachtet deshalb die Uhr statt die Arbeit. Er kann sich bei einem echt
+langsamen Schritt irren, und das ist die richtige Richtung: eine fälschlich als
+fehlgeschlagen markierte Mission ist sichtbar und aus ihrem Checkpoint
+wiederholbar, eine hängende ist unsichtbar.
+
+### Genehmigte Routinen feuern jetzt wirklich
+
+Die Lücke aus dem letzten Schritt ist zu. Bei Freigabe wird die Routine als
+prozedurales Memory gespeichert *und*, wenn ihr Trigger uhrbasiert ist, als
+Scheduler-Job registriert. Der Trigger ist dafür maschinenlesbar
+(`TriggerKind`), statt aus dem Prosatext zurückgeparst zu werden.
+
+Ein `WHENEVER`- oder `AFTER`-Trigger bekommt Memory, aber keinen Job: der
+Scheduler arbeitet mit einer Uhr, und eine Routine „nach dem Systemcheck" hätte
+nichts, worauf er warten könnte. Einen Job zu registrieren, der nie feuert,
+wäre ein leeres Versprechen.
+
+## 9. Was als Nächstes ansteht
 
 Nach Prinzip 5 („build core before spectacle") und in dieser Reihenfolge:
 
 1. **Live-Verifikation des Claude Agent SDK Providers**, sobald Auth
-   geklärt ist.
-2. **Planner + Scheduler** — echte Mehrschritt-Pläne mit Dependencies und
-   Checkpoints, Background Missions. Der Scheduler macht genehmigte Routinen
-   ausführbar.
+   geklärt ist. Damit wird auch der Delegationsschritt im Planner echt.
+2. **Event-getriggerte Routinen** — `AFTER`-Trigger brauchen einen
+   Event-Watcher neben dem uhrbasierten Scheduler.
 3. **Vector Search / pgvector**, sobald über Embeddings entschieden ist.
 4. **Voice Engine** (Blueprint 9) — Wake Word, Streaming STT/TTS, Barge-in.
 5. **HUD** (Blueprint 3) — erst danach.

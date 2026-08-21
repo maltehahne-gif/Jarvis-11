@@ -85,6 +85,11 @@
   </section>
 
   <section>
+    <h2>Scheduler</h2>
+    <div id="jobs"></div>
+  </section>
+
+  <section>
     <h2>What JARVIS Knows</h2>
     <div id="privacy"></div>
     <div id="routines"></div>
@@ -162,16 +167,90 @@ async function refresh() {
       <button onclick="decide('deny','${esc(p.fingerprint)}',false)">ablehnen</button>
     </div>`).join('');
 
+  // Missions show plan progress: how many steps, how far, how many
+  // checkpoints. Blueprint 3.2's Mission view wants goal tree, dependencies
+  // and checkpoints - this is the debug-grade version of that.
   const missions = await (await fetch('/missions?limit=15')).json();
-  $('missions').innerHTML = '<table><tr><th>Ziel</th><th>Status</th><th>Tasks</th></tr>' +
+  $('missions').innerHTML =
+    '<table><tr><th>Ziel</th><th>Status</th><th>Fortschritt</th><th>Plan</th></tr>' +
     missions.map(m => {
       const cls = m.state === 'COMPLETED' ? 'green'
                 : ['FAILED','BLOCKED','CANCELED'].includes(m.state) ? 'red' : 'amber';
-      return `<tr><td>${esc(m.goal)}</td><td class="${cls}">${esc(m.state)}</td>
-              <td class="dim">${m.tasks.length}</td></tr>`;
+      const done = m.tasks.filter(t => t.state === 'DONE').length;
+      const failed = m.tasks.filter(t => t.state === 'FAILED').length;
+      const skipped = m.tasks.filter(t => t.state === 'SKIPPED').length;
+      const plan = m.context && m.context.plan;
+      // Only PAUSED. A BLOCKED mission was refused by the Permission Engine,
+      // and re-running it unchanged would simply be refused again - what it
+      // needs is a grant or an approval, not another attempt.
+      const resumable = m.state === 'PAUSED';
+      return `<tr>
+        <td>${esc(m.goal)}
+          ${resumable ? `<button onclick="resumeMission('${esc(m.mission_id)}')">fortsetzen</button>` : ''}</td>
+        <td class="${cls}">${esc(m.state)}</td>
+        <td class="dim">${done}/${m.tasks.length}
+          ${failed ? `<span class="red">${failed} fehlgeschlagen</span>` : ''}
+          ${skipped ? `<span class="dim">${skipped} übersprungen</span>` : ''}
+          ${(m.checkpoints || []).length ? `· ${m.checkpoints.length} ⚑` : ''}</td>
+        <td class="dim">${plan ? esc(plan.source) + ' · ' + esc(plan.max_risk) : '—'}</td>
+      </tr>`;
     }).join('') + '</table>';
 
+  await refreshJobs();
   await refreshMemory();
+}
+
+// ---- scheduler (Blueprint 5.1) ---------------------------------------------
+async function refreshJobs() {
+  const s = await (await fetch('/scheduler')).json();
+  const rows = s.jobs.map(j => {
+    const state = !j.enabled ? '<span class="red">aus</span>'
+                : j.needs_approval_each_run ? '<span class="amber">parkt</span>'
+                : '<span class="green">aktiv</span>';
+    return `<tr>
+      <td>${esc(j.name)} <span class="dim">${esc(j.kind)}</span></td>
+      <td>${state}</td>
+      <td class="dim">${esc((j.next_run_at || '').slice(11,19))}</td>
+      <td class="dim">${j.attempts ? j.attempts + '/' + j.max_attempts : '—'}</td>
+      <td class="dim">${esc(j.last_outcome || '—')}</td>
+      <td><button onclick="removeJob('${esc(j.job_id)}')">löschen</button></td>
+    </tr>`;
+  }).join('');
+
+  $('jobs').innerHTML =
+    `<div class="dim">${s.total} Jobs · ${s.enabled} aktiv · ${s.needing_approval} brauchen Freigabe
+      · unbeaufsichtigt max. ${esc(s.max_unattended_level)}</div>
+     <button onclick="tickScheduler()">jetzt fällige ausführen</button>
+     <button onclick="sweepWatchdog()">Watchdog-Sweep</button>` +
+    (s.total ? `<table><tr><th>Job</th><th></th><th>nächster Lauf</th><th>Versuche</th>
+       <th>zuletzt</th><th></th></tr>${rows}</table>` : '');
+}
+
+async function tickScheduler() {
+  const rs = await (await fetch('/scheduler/tick', { method: 'POST' })).json();
+  showReply('scheduler tick', {
+    message: rs.length ? rs.map(r => `${r.outcome}: ${r.detail}`).join(' · ') : 'nichts fällig'
+  });
+  refresh();
+}
+
+async function sweepWatchdog() {
+  const r = await (await fetch('/watchdog/sweep', { method: 'POST' })).json();
+  showReply('watchdog', {
+    message: `${r.checked} laufend geprüft, ${r.tripped.length} abgebrochen`
+  });
+  refresh();
+}
+
+async function removeJob(id) {
+  await fetch(`/scheduler/jobs/${id}`, { method: 'DELETE' });
+  refreshJobs();
+}
+
+async function resumeMission(id) {
+  const r = await (await fetch(`/missions/${id}/resume`, { method: 'POST' })).json();
+  showReply('fortsetzen', r);
+  refresh();
 }
 
 // ---- "What JARVIS Knows" (Blueprint 8.4) -----------------------------------

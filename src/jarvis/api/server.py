@@ -17,7 +17,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -27,8 +27,11 @@ from pydantic import BaseModel, Field
 
 from jarvis.config import CoreConfig
 from jarvis.core import JarvisCore
+from jarvis.events.envelope import utc_now
 from jarvis.memory.models import MemoryType
 from jarvis.permission.policy import Confirmation
+from jarvis.planner.plan import PlanError
+from jarvis.scheduler.jobs import JobKind, ScheduledJob, parse_daily_at
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +85,55 @@ class PrivacyRequest(BaseModel):
 
 class RoutineDecisionRequest(BaseModel):
     approve: bool
+
+
+class PlanRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class JobRequest(BaseModel):
+    """A scheduled job - Blueprint 5.1.
+
+    `grants` are fixed at registration and never widened at fire time, so a
+    job cannot acquire scopes later that the owner did not give it here.
+    """
+
+    name: str = Field(min_length=1, max_length=200)
+    goal: str = Field(min_length=1, max_length=4000)
+    kind: str = "once"
+    capability: str | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
+    grants: list[str] = Field(default_factory=list)
+    device_id: str | None = None
+    #: Seconds from now for a one-shot, or the interval for a repeating job.
+    in_seconds: float | None = None
+    interval_seconds: float | None = None
+    daily_at: str | None = None
+    max_attempts: int = Field(default=3, ge=1, le=10)
+
+    def to_job(self) -> ScheduledJob:
+        kind = JobKind(self.kind)
+        first = utc_now() + timedelta(seconds=self.in_seconds or 0)
+        at = parse_daily_at(self.daily_at) if self.daily_at else None
+
+        if kind is JobKind.DAILY and at is not None and self.in_seconds is None:
+            first = datetime.combine(utc_now().date(), at, tzinfo=UTC)
+            if first <= utc_now():
+                first += timedelta(days=1)
+
+        return ScheduledJob(
+            name=self.name,
+            goal=self.goal,
+            kind=kind,
+            capability=self.capability,
+            params=self.params,
+            grants=frozenset(self.grants),
+            device_id=self.device_id,
+            next_run_at=first,
+            interval=(timedelta(seconds=self.interval_seconds) if self.interval_seconds else None),
+            daily_at=at,
+            max_attempts=self.max_attempts,
+        )
 
 
 def create_app(core: JarvisCore | None = None, config: CoreConfig | None = None) -> FastAPI:
@@ -177,6 +229,73 @@ def create_app(core: JarvisCore | None = None, config: CoreConfig | None = None)
     @app.get("/routing")
     async def routing() -> dict[str, Any]:
         return core.model_router.table()
+
+    # -- planner, missions, scheduler (Blueprint 5.1) ----------------------
+
+    @app.post("/plan")
+    async def plan(request: PlanRequest) -> dict[str, Any]:
+        """Assess a goal without running it - the Mission HUD's dry run."""
+        intent = core.router.route(request.text)
+        try:
+            planned = await core.planner.plan(
+                request.text, capability=intent.capability, params=intent.params
+            )
+        except PlanError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"intent": intent.to_dict(), **planned.to_dict()}
+
+    @app.get("/missions/{mission_id}/progress")
+    async def mission_progress(mission_id: str) -> dict[str, Any]:
+        found = await core.missions.load(mission_id)
+        if found is None:
+            raise HTTPException(status_code=404, detail="mission not found")
+        return {
+            **core.runner.progress(found),
+            "checkpoints": [c.to_dict() for c in found.checkpoints],
+            "plan": found.context.get("plan"),
+        }
+
+    @app.post("/missions/{mission_id}/resume")
+    async def mission_resume(mission_id: str) -> dict[str, Any]:
+        """Continue a paused or failed mission from its last checkpoint."""
+        found = await core.missions.load(mission_id)
+        if found is None:
+            raise HTTPException(status_code=404, detail="mission not found")
+        return (await core.resume_mission(found)).to_dict()
+
+    @app.get("/scheduler")
+    async def scheduler() -> dict[str, Any]:
+        return core.scheduler.snapshot()
+
+    @app.post("/scheduler/jobs")
+    async def scheduler_add(request: JobRequest) -> dict[str, Any]:
+        job = await core.scheduler.register(request.to_job())
+        return {
+            **job.to_dict(),
+            "needs_approval_each_run": core.scheduler.needs_approval(job),
+        }
+
+    @app.delete("/scheduler/jobs/{job_id}")
+    async def scheduler_remove(job_id: str) -> dict[str, Any]:
+        if not await core.scheduler.remove(job_id):
+            raise HTTPException(status_code=404, detail="job not found")
+        return {"removed": job_id}
+
+    @app.post("/scheduler/jobs/{job_id}/enabled")
+    async def scheduler_enable(job_id: str, enabled: bool = True) -> dict[str, Any]:
+        job = await core.scheduler.set_enabled(job_id, enabled)
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return job.to_dict()
+
+    @app.post("/scheduler/tick")
+    async def scheduler_tick() -> list[dict[str, Any]]:
+        """Fire everything currently due, without waiting for the poll loop."""
+        return [r.to_dict() for r in await core.scheduler.tick()]
+
+    @app.post("/watchdog/sweep")
+    async def watchdog_sweep() -> dict[str, Any]:
+        return (await core.watchdog.sweep()).to_dict()
 
     # -- "What JARVIS Knows" (Blueprint 8.4) -------------------------------
 

@@ -33,6 +33,10 @@ class CoreConfig:
     #: Billing/Auth question decides when the latter is actually used; until
     #: then the Core stays fully functional on the rule-based provider.
     provider: str = "rules"
+    #: Whether the Scheduler's poll loop runs. Off in tests, which drive
+    #: `scheduler.tick()` directly so job timing is deterministic rather than
+    #: dependent on wall-clock races.
+    scheduler_enabled: bool = True
 
     @classmethod
     def from_env(cls) -> CoreConfig:

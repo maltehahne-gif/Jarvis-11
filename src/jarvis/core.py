@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from jarvis.agents.coordinator import AgentCoordinator, AgentRun
@@ -33,19 +33,32 @@ from jarvis.config import CoreConfig
 from jarvis.context.builder import ContextBuilder, Destination
 from jarvis.events import types as ev
 from jarvis.events.bus import EventBus
-from jarvis.events.envelope import Event, Priority, new_id
+from jarvis.events.envelope import Event, Priority, new_id, utc_now
 from jarvis.execution.budget import BudgetTracker
 from jarvis.execution.gateway import ExecutionGateway, ExecutionOutcome, ExecutionResult
 from jarvis.intent.router import ControlAction, Intent, IntentRouter, Route
 from jarvis.memory.control import MemoryControl
+from jarvis.memory.learning import RoutineProposal
 from jarvis.memory.service import MemoryService
 from jarvis.mission.engine import MissionEngine
-from jarvis.mission.model import Mission, MissionState, Task, TaskState
+from jarvis.mission.model import Mission, MissionState, TaskState
+from jarvis.mission.runner import MissionRunner, RunOutcome, StopReason
 from jarvis.permission.engine import PermissionEngine
 from jarvis.permission.policy import Confirmation, Policy
 from jarvis.persistence.ports import Store
 from jarvis.persistence.sqlite_store import SqliteStore
+from jarvis.planner.plan import PlanError
+from jarvis.planner.planner import PlannedMission, Planner
 from jarvis.routing.model_router import ModelRouter, TaskClass
+from jarvis.scheduler.jobs import (
+    JobKind,
+    JobOutcome,
+    JobResult,
+    ScheduledJob,
+    parse_daily_at,
+)
+from jarvis.scheduler.scheduler import Scheduler
+from jarvis.scheduler.watchdog import Watchdog
 from jarvis.state.manager import StateManager
 from jarvis.tools.mock import MockWorld, register_mock_tools
 from jarvis.verify.verifier import Verifier
@@ -118,7 +131,12 @@ class JarvisCore:
 
         # Memory subscribes to the Bus rather than being called from the
         # command path - Blueprint 5.1 lists Memory among the Bus's consumers.
-        self.memory = MemoryService(store=self.store, state_store=self.store, audit=self.audit)
+        self.memory = MemoryService(
+            store=self.store,
+            state_store=self.store,
+            audit=self.audit,
+            activator=self.activate_routine,
+        )
         self.memory.attach_to_bus(self.bus)
         self.memory_control = MemoryControl(self.memory, audit=self.audit, bus=self.bus)
         self.context = ContextBuilder(self.memory)
@@ -131,6 +149,29 @@ class JarvisCore:
             bus=self.bus,
             router=self.model_router,
             max_turns=self.config.max_agent_turns,
+        )
+
+        self.planner = Planner(self.registry, memory=self.memory, default_budget=self.config.budget)
+        self.runner = MissionRunner(
+            missions=self.missions,
+            gateway=self.gateway,
+            permissions=self.permissions,
+            bus=self.bus,
+            coordinator=self.coordinator,
+        )
+        self.scheduler = Scheduler(
+            executor=self.run_scheduled_job,
+            bus=self.bus,
+            permissions=self.permissions,
+            registry=self.registry,
+            state_store=self.store,
+            audit=self.audit,
+        )
+        self.watchdog = Watchdog(
+            missions=self.missions,
+            bus=self.bus,
+            max_duration=self.config.budget.max_duration,
+            audit=self.audit,
         )
         self._started = False
 
@@ -146,7 +187,10 @@ class JarvisCore:
         # owner switched learning off would start learning again on its own.
         await self.memory.load()
         await self.memory.purge_expired()
+        await self.scheduler.load()
         resumed = await self.missions.resume_open_missions()
+        if self.config.scheduler_enabled:
+            await self.scheduler.start()
         self._started = True
         log.info("core started; %d mission(s) resumed", len(resumed))
         return resumed
@@ -154,6 +198,7 @@ class JarvisCore:
     async def stop(self) -> None:
         if not self._started:
             return
+        await self.scheduler.stop()
         await self.store.close()
         self._started = False
 
@@ -192,9 +237,40 @@ class JarvisCore:
 
         if intent.route is Route.CONTROL:
             return await self._handle_control(intent, correlation_id, device_id)
-        if intent.route is Route.LOCAL_TOOL:
-            return await self._handle_local_tool(intent, correlation_id, device_id, grants)
-        return await self._handle_agent(intent, correlation_id, device_id, grants)
+
+        # Refused at the door, not deep in the pipeline. Blueprint 7.2's kill
+        # switch is meant to stop work, so the honest response to a new command
+        # is to decline it before a mission exists - a mission created only to
+        # be halted would show up in the HUD as work that never happened. The
+        # Permission Engine denies these calls too (`test_permission.py`); this
+        # is the earlier of two independent refusals, not a replacement.
+        if self.permissions.kill_switch_engaged:
+            await self.audit.log(
+                action="command.refused",
+                actor="core",
+                subject=intent.capability or "command",
+                decision="deny",
+                correlation_id=correlation_id,
+                rule="kill_switch",
+                text=text,
+            )
+            await self.bus.publish(
+                Event(
+                    type=ev.COMMAND_REJECTED,
+                    source="core",
+                    correlation_id=correlation_id,
+                    device_id=device_id,
+                    priority=Priority.URGENT,
+                    payload={"reason": "kill_switch", "text": text},
+                )
+            )
+            return CommandResult(
+                message="Kill Switch ist aktiv. Sag „weitermachen“, wenn ich wieder darf.",
+                intent=intent,
+                extra={"refused": "kill_switch"},
+            )
+
+        return await self._handle_planned(intent, correlation_id, device_id, grants)
 
     async def _handle_control(
         self, intent: Intent, correlation_id: str, device_id: str | None
@@ -246,108 +322,253 @@ class JarvisCore:
         )
         return CommandResult(message="Weiter.", intent=intent, extra={"kill_switch": False})
 
-    async def _handle_local_tool(
+    async def _handle_planned(
         self,
         intent: Intent,
         correlation_id: str,
         device_id: str | None,
         grants: frozenset[str],
     ) -> CommandResult:
-        assert intent.capability is not None
-        mission = await self._open_mission(intent, correlation_id, device_id)
-        task = await self.missions.add_task(
-            mission,
-            Task(
-                description=intent.text,
-                capability=intent.capability,
-                params=intent.params,
-            ),
-        )
+        """Plan the goal, then run the plan - Blueprint figure 2's Plan/Route.
 
-        # Rights are scoped to this mission and this capability, and they
-        # expire (Blueprint 7.2).
-        self.permissions.issue_grant(
-            mission.mission_id,
-            capabilities=frozenset({intent.capability}),
-            grants=grants,
-            ttl=self.config.grant_ttl,
-            device_id=device_id,
-        )
-        self.gateway.budgets.start(mission.mission_id, self.config.budget)
-
-        await self.missions.transition(mission, MissionState.RUNNING, "local tool dispatch")
-        await self.state.mark_active(mission.mission_id)
-
-        context = ExecutionContext(
-            correlation_id=correlation_id,
-            mission_id=mission.mission_id,
-            device_id=device_id,
-            actor="intent-router",
-            grants=grants,
-        )
-        result = await self.gateway.execute(intent.capability, intent.params, context)
-        task.state = self._task_state_for(result)
-        task.result = result.to_dict()
-
-        return await self._settle(mission, result=result, task_note=intent.text)
-
-    async def _handle_agent(
-        self,
-        intent: Intent,
-        correlation_id: str,
-        device_id: str | None,
-        grants: frozenset[str],
-    ) -> CommandResult:
+        Both a one-capability command and an open-ended goal come through here.
+        They differ only in what the Planner produces: a single direct step for
+        the first, a delegation step for the second, or a multi-step procedure
+        when memory knows one. Everything after that - dependencies, permission
+        checks, checkpoints, verification - is identical, which is the point of
+        having a plan at all.
+        """
         mission = await self._open_mission(intent, correlation_id, device_id)
 
-        # The agent may reach for any registered capability, but named scopes
-        # still gate the sensitive ones: without an explicit `comms` or
-        # `secrets` grant, those calls are denied by the Permission Engine.
-        self.permissions.issue_grant(
-            mission.mission_id,
-            capabilities=frozenset({"*"}),
-            grants=grants,
-            ttl=self.config.grant_ttl,
-            device_id=device_id,
-        )
-        self.gateway.budgets.start(mission.mission_id, self.config.budget)
-
-        await self.missions.transition(mission, MissionState.RUNNING, "agent planning")
-        await self.state.mark_active(mission.mission_id)
-
-        context = ExecutionContext(
-            correlation_id=correlation_id,
-            mission_id=mission.mission_id,
-            device_id=device_id,
-            actor="agent-coordinator",
-            grants=grants,
-        )
-
-        # Assemble only the relevant context, and only what may travel to
-        # where this request is going (Blueprint 5.1 Context Builder).
+        # Context is assembled before planning, so a remembered procedure and
+        # the agent both see the same relevant world (Blueprint 5.1).
         routing = self.model_router.route(TaskClass.FEATURE, offline=self.config.offline)
         built = await self.context.build(
             intent.text,
             destination=Destination.for_provider(routing.provider),
             state=self.state.snapshot(),
         )
-        run = await self.coordinator.run(
-            intent.text, context, offline=self.config.offline, extra_context=built.to_dict()
-        )
 
-        for execution in run.executions:
-            mission.add_task(
-                Task(
-                    description=f"agent: {execution.capability}",
-                    capability=execution.capability,
-                    state=self._task_state_for(execution),
-                    result=execution.to_dict(),
-                )
+        try:
+            planned = await self.planner.plan(
+                intent.text,
+                capability=intent.capability,
+                params=intent.params,
             )
+        except PlanError as exc:
+            await self.missions.transition(mission, MissionState.FAILED, str(exc))
+            await self._release(mission)
+            return CommandResult(
+                message=f"Dafür habe ich keinen ausführbaren Plan: {exc}",
+                intent=intent,
+                mission_id=mission.mission_id,
+                mission_state=str(mission.state),
+            )
+
+        if not planned.executable:
+            # Refusing up front beats starting something that provably cannot
+            # finish and discovering it half-done (Blueprint 5.1, "Budget ...
+            # berücksichtigen").
+            reason = "; ".join(planned.budget_problems)
+            await self.missions.transition(mission, MissionState.BLOCKED, reason)
+            await self._release(mission)
+            return CommandResult(
+                message=f"Passt nicht ins Budget: {reason}",
+                intent=intent,
+                mission_id=mission.mission_id,
+                mission_state=str(mission.state),
+                extra={"plan": planned.to_dict()},
+            )
+
+        mission.context["plan"] = planned.to_dict()
+        for task in planned.plan.to_tasks():
+            mission.add_task(task)
         await self.missions.save(mission)
 
-        last = run.executions[-1] if run.executions else None
-        return await self._settle(mission, result=last, agent_run=run, task_note=intent.text)
+        await self.bus.publish(
+            Event(
+                type=ev.PLAN_CREATED,
+                source="planner",
+                correlation_id=correlation_id,
+                device_id=device_id,
+                payload={"mission_id": mission.mission_id, **planned.to_dict()},
+            )
+        )
+
+        # Rights are scoped to exactly what the plan will call, and they expire
+        # (Blueprint 7.2). A plan that delegates to an agent cannot name its
+        # calls in advance, so it gets the wildcard - named scopes still gate
+        # the sensitive capabilities behind it.
+        named = frozenset(s.capability for s in planned.plan.steps if s.capability)
+        needs_wildcard = any(s.capability is None for s in planned.plan.steps)
+        self.permissions.issue_grant(
+            mission.mission_id,
+            capabilities=frozenset({"*"}) if needs_wildcard else named,
+            grants=grants,
+            ttl=self.config.grant_ttl,
+            device_id=device_id,
+        )
+        self.gateway.budgets.start(mission.mission_id, planned.budget)
+
+        await self.missions.transition(mission, MissionState.RUNNING, planned.plan.rationale)
+        await self.state.mark_active(mission.mission_id)
+
+        outcome = await self.runner.run(
+            mission,
+            grants=grants,
+            device_id=device_id,
+            actor="core",
+            agent_context=built.to_dict(),
+            offline=self.config.offline,
+        )
+        return await self._settle_run(
+            mission, outcome, intent=intent, plan=planned, context_used=built
+        )
+
+    async def resume_mission(
+        self, mission: Mission, *, grants: frozenset[str] = frozenset()
+    ) -> CommandResult:
+        """Continue a stopped mission from its last checkpoint.
+
+        This is what checkpoints are for. A mission paused by the kill switch,
+        killed by the watchdog or interrupted by a restart keeps its completed
+        tasks; resuming re-runs only what is left. Every remaining step still
+        goes through the Permission Engine - time has passed, grants have
+        expired, and the world may have changed since the plan was made.
+        """
+        if mission.is_terminal and mission.state is not MissionState.FAILED:
+            return CommandResult(
+                message=f"Mission ist bereits {mission.state}.",
+                mission_id=mission.mission_id,
+                mission_state=str(mission.state),
+            )
+
+        if mission.state is MissionState.FAILED:
+            # FAILED is terminal in the state machine, and rightly so - a
+            # resumed run is a new attempt, not a continuation of the old one.
+            return CommandResult(
+                message=(
+                    "Diese Mission ist fehlgeschlagen. Schick den Auftrag neu, "
+                    "dann läuft nur der Rest des Plans."
+                ),
+                mission_id=mission.mission_id,
+                mission_state=str(mission.state),
+            )
+
+        self.permissions.issue_grant(
+            mission.mission_id,
+            capabilities=frozenset(t.capability for t in mission.tasks if t.capability)
+            or frozenset({"*"}),
+            grants=grants,
+            ttl=self.config.grant_ttl,
+            device_id=mission.device_id,
+        )
+        self.gateway.budgets.start(mission.mission_id, self.config.budget)
+        await self.state.mark_active(mission.mission_id)
+
+        outcome = await self.runner.resume(mission, grants=grants, device_id=mission.device_id)
+        return await self._settle_run(mission, outcome)
+
+    async def activate_routine(self, proposal: RoutineProposal) -> str | None:
+        """Turn an owner-approved routine into a scheduled job (Blueprint 8.3).
+
+        This is where "erst nach Freigabe werden ... Automationen permanent"
+        actually becomes permanent. The job inherits no rights beyond the
+        default scope, and if its capability sits above the Scheduler's
+        unattended ceiling it will park for confirmation on every firing
+        rather than run - approving a *pattern* is not approving unattended
+        execution of a sensitive action.
+        """
+        if not proposal.schedulable:
+            return None
+
+        at = parse_daily_at(proposal.trigger_detail or "09h")
+        first_run = datetime.combine(utc_now().date(), at, tzinfo=UTC)
+        if first_run <= utc_now():
+            first_run += timedelta(days=1)
+
+        job = await self.scheduler.register(
+            ScheduledJob(
+                name=f"routine: {proposal.capability}",
+                goal=f"{proposal.capability} ({proposal.trigger})",
+                kind=JobKind.DAILY,
+                capability=proposal.capability,
+                params=dict(proposal.params),
+                daily_at=at,
+                next_run_at=first_run,
+                origin=f"routine:{proposal.proposal_id}",
+            )
+        )
+        return job.job_id
+
+    async def run_scheduled_job(self, job: ScheduledJob) -> JobResult:
+        """Execute one scheduled job as a background mission.
+
+        The Scheduler has already refused anything above the unattended risk
+        ceiling, but nothing here relies on that: every step still goes through
+        the Permission Engine, and a call that turns out to need confirmation
+        parks the mission rather than proceeding. Defence in depth, because the
+        ceiling is a policy and the gate is a mechanism.
+        """
+        try:
+            planned = await self.planner.plan(
+                job.goal, capability=job.capability, params=job.params
+            )
+        except PlanError as exc:
+            return JobResult(outcome=JobOutcome.FAILED, detail=str(exc))
+
+        if not planned.executable:
+            return JobResult(outcome=JobOutcome.FAILED, detail="; ".join(planned.budget_problems))
+
+        mission = await self.missions.create(
+            job.goal,
+            device_id=job.device_id,
+            context={"scheduled_job": job.job_id, "origin": job.origin, "unattended": True},
+        )
+        await self.missions.transition(mission, MissionState.PLANNING, f"job {job.name}")
+
+        mission.context["plan"] = planned.to_dict()
+        for task in planned.plan.to_tasks():
+            mission.add_task(task)
+        await self.missions.save(mission)
+
+        # Exactly the grants the job was registered with - never more.
+        named = frozenset(s.capability for s in planned.plan.steps if s.capability)
+        needs_wildcard = any(s.capability is None for s in planned.plan.steps)
+        self.permissions.issue_grant(
+            mission.mission_id,
+            capabilities=frozenset({"*"}) if needs_wildcard else named,
+            grants=job.grants,
+            ttl=self.config.grant_ttl,
+            device_id=job.device_id,
+        )
+        self.gateway.budgets.start(mission.mission_id, planned.budget)
+
+        await self.missions.transition(mission, MissionState.RUNNING, "scheduled run")
+        await self.state.mark_active(mission.mission_id)
+
+        outcome = await self.runner.run(
+            mission, grants=job.grants, device_id=job.device_id, actor="scheduler"
+        )
+        settled = await self._settle_run(mission, outcome, plan=planned)
+
+        if outcome.pending_approval is not None:
+            return JobResult(
+                outcome=JobOutcome.PARKED,
+                mission_id=mission.mission_id,
+                detail=outcome.pending_approval.get("reason", "needs confirmation"),
+            )
+        if outcome.succeeded:
+            return JobResult(
+                outcome=JobOutcome.SUCCEEDED,
+                mission_id=mission.mission_id,
+                detail=settled.message,
+            )
+        return JobResult(
+            outcome=JobOutcome.FAILED,
+            mission_id=mission.mission_id,
+            detail=settled.message,
+        )
 
     # -- approvals ----------------------------------------------------------
 
@@ -465,6 +686,106 @@ class JarvisCore:
         if result.outcome is ExecutionOutcome.AWAITING_CONFIRMATION:
             return TaskState.PENDING
         return TaskState.FAILED
+
+    async def _settle_run(
+        self,
+        mission: Mission,
+        outcome: RunOutcome,
+        *,
+        intent: Intent | None = None,
+        plan: PlannedMission | None = None,
+        context_used: Any = None,
+    ) -> CommandResult:
+        """Bring a finished plan run to rest and describe what happened.
+
+        The stop reason decides the resting state, and each one lands somewhere
+        the owner can act on: an unfinished plan is never quietly reported as
+        done, and a mission stopped by the kill switch is PAUSED rather than
+        FAILED, because it can be resumed from its checkpoint.
+        """
+        last = outcome.executions[-1] if outcome.executions else None
+        agent_run = outcome.agent_runs[-1] if outcome.agent_runs else None
+        pending_approval: dict[str, Any] | None = None
+        message: str
+
+        if outcome.pending_approval is not None:
+            pending_approval = outcome.pending_approval
+            await self.missions.transition(
+                mission, MissionState.WAITING_FOR_APPROVAL, pending_approval["reason"]
+            )
+            message = f"Bestätigung nötig: {pending_approval['reason']}"
+
+        elif outcome.stopped_reason == StopReason.KILL_SWITCH:
+            await self.missions.transition(mission, MissionState.PAUSED, "kill switch engaged")
+            message = "Gestoppt."
+
+        elif outcome.stopped_reason.startswith("budget:"):
+            limit = outcome.stopped_reason.removeprefix("budget:")
+            await self.missions.transition(
+                mission, MissionState.FAILED, f"budget exhausted: {limit}"
+            )
+            message = f"Budget erschöpft ({limit})."
+
+        elif outcome.stopped_reason == StopReason.BLOCKED:
+            await self.missions.transition(
+                mission, MissionState.BLOCKED, "a step it depended on did not complete"
+            )
+            message = "Blockiert: ein vorheriger Schritt ist nicht durchgelaufen."
+
+        elif last is not None and last.outcome is ExecutionOutcome.DENIED:
+            await self.missions.transition(mission, MissionState.BLOCKED, last.detail)
+            message = f"Blockiert: {last.detail}"
+
+        elif not outcome.executions and not outcome.completed:
+            await self.missions.transition(
+                mission, MissionState.FAILED, "no executable step was produced"
+            )
+            message = "Dafür habe ich keinen ausführbaren Schritt gefunden."
+
+        else:
+            # Verification, not the tool's own word, decides whether it is done.
+            await self.missions.transition(mission, MissionState.VERIFYING, "checking outcome")
+            if outcome.succeeded:
+                await self.missions.transition(mission, MissionState.COMPLETED, "goal verified")
+                message = "Erledigt."
+            else:
+                detail = self._failure_detail(outcome)
+                await self.missions.transition(mission, MissionState.FAILED, detail)
+                message = f"Nicht erreicht: {detail}"
+
+        if mission.state is not MissionState.WAITING_FOR_APPROVAL:
+            await self._release(mission)
+
+        extra: dict[str, Any] = {"run": outcome.to_dict()}
+        if plan is not None:
+            extra["plan"] = plan.to_dict()
+        if context_used is not None:
+            extra["context"] = context_used.to_dict()
+
+        return CommandResult(
+            message=message,
+            intent=intent,
+            mission_id=mission.mission_id,
+            mission_state=str(mission.state),
+            execution=last,
+            agent_run=agent_run,
+            pending_approval=pending_approval,
+            extra=extra,
+        )
+
+    @staticmethod
+    def _failure_detail(outcome: RunOutcome) -> str:
+        for execution in reversed(outcome.executions):
+            if execution.verification is not None and not execution.verification.goal_reached:
+                return (
+                    f"tool reported success but verification failed: "
+                    f"{execution.verification.detail}"
+                )
+            if execution.outcome is ExecutionOutcome.FAILED:
+                return execution.detail
+            if execution.outcome is ExecutionOutcome.INVALID:
+                return f"ungültiger Aufruf: {execution.detail}"
+        return outcome.stopped_reason
 
     async def _settle(
         self,

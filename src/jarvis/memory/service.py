@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -61,6 +62,10 @@ PROPOSALS_STATE_KEY = "memory.proposals"
 #: 'fertig'" would otherwise become a learned routine.
 LEARNABLE_VERIFICATION = frozenset({"passed", "unverifiable"})
 
+#: Called when the owner approves a routine whose trigger the Scheduler can
+#: watch. Returns the new job id, or `None` if it could not be scheduled.
+RoutineActivator = Callable[[RoutineProposal], Awaitable[str | None]]
+
 
 @dataclass(frozen=True, slots=True)
 class RememberResult:
@@ -91,10 +96,14 @@ class MemoryService:
         audit: AuditLogger | None = None,
         index: MemoryIndex | None = None,
         privacy: PrivacyFilter | None = None,
+        activator: RoutineActivator | None = None,
     ) -> None:
         self._store = store
         self._state_store = state_store
         self._audit = audit
+        #: Turns an approved routine into a scheduled job. Injected rather
+        #: than imported so Memory keeps knowing nothing about the Scheduler.
+        self._activator = activator
         self.privacy = privacy or PrivacyFilter()
         self.index: MemoryIndex = index or LexicalIndex(store)
         self.graph = KnowledgeGraph(store)
@@ -268,30 +277,37 @@ class MemoryService:
     async def decide_proposal(self, proposal_id: str, *, approve: bool) -> RoutineProposal | None:
         """Record the owner's decision on a suggested routine.
 
-        Approval is *not* activation. Blueprint 8.3 allows an approved
-        automation to become permanent, but actually firing one on a schedule
-        needs the Scheduler from Blueprint 5.1, which does not exist yet. What
-        approval does today is record the decision as procedural memory so the
-        routine is remembered and can be activated once the Scheduler lands.
+        Approval does two things, and only the owner's word starts either.
+        The routine is written to procedural memory, so the Planner can reuse
+        it the next time the goal comes up; and, when its trigger is one the
+        Scheduler can actually watch for, it is registered as a job.
+
+        A `WHENEVER` or `AFTER` trigger gets memory but no job. The Scheduler
+        works from a clock, so a routine keyed to "after you check the system
+        status" has nothing for it to wait on - registering it would create a
+        job that never fires and a promise that is never kept.
         """
         proposal = self._proposals.get(proposal_id)
         if proposal is None:
             return None
 
-        decided = proposal.approved() if approve else proposal.rejected()
-        self._proposals[proposal_id] = decided
-        await self._save_proposals()
-
+        job_id: str | None = None
         if approve:
             await self._store.put_memory(
                 new_entry(
                     type=MemoryType.PROCEDURAL,
                     subject=OWNER,
-                    predicate=f"routine:{decided.capability}",
-                    value={"trigger": decided.trigger, "params": decided.params},
+                    predicate=f"routine:{proposal.capability}",
+                    value={"trigger": proposal.trigger, "params": proposal.params},
                     source=Source.EXPLICIT_STATEMENT,
                 ).to_dict()
             )
+            if proposal.schedulable and self._activator is not None:
+                job_id = await self._activator(proposal)
+
+        decided = proposal.approved(job_id=job_id) if approve else proposal.rejected()
+        self._proposals[proposal_id] = decided
+        await self._save_proposals()
 
         if self._audit is not None:
             await self._audit.log(
@@ -301,7 +317,9 @@ class MemoryService:
                 decision="approved" if approve else "rejected",
                 correlation_id=decided.proposal_id,
                 trigger=decided.trigger,
+                trigger_kind=str(decided.trigger_kind),
                 observations=decided.observations,
+                scheduled_job_id=job_id,
             )
         return decided
 

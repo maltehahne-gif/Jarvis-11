@@ -55,6 +55,24 @@ class ProposalStatus(StrEnum):
     REJECTED = "rejected"
 
 
+class TriggerKind(StrEnum):
+    """What would set an approved routine off.
+
+    Kept structured rather than parsed back out of the human-readable
+    `trigger` sentence. Only `DAILY` can become a scheduled job; the other two
+    describe conditions the Scheduler cannot watch for, and pretending
+    otherwise would produce jobs that never fire.
+    """
+
+    #: Recurs, but not on a clock. Usable by the Planner, not the Scheduler.
+    WHENEVER = "whenever"
+    #: Recurs around a particular hour - Blueprint 8.1's "Tagesmuster".
+    DAILY = "daily"
+    #: Follows another action. Needs event-driven triggering, which the
+    #: Scheduler does not do.
+    AFTER = "after"
+
+
 @dataclass(frozen=True, slots=True)
 class RoutineProposal:
     """A pattern JARVIS noticed and would like permission to act on.
@@ -70,14 +88,23 @@ class RoutineProposal:
     rationale: str
     observations: int
     confidence: float
+    trigger_kind: TriggerKind = TriggerKind.WHENEVER
+    #: The hour bucket for DAILY, the preceding capability for AFTER.
+    trigger_detail: str = ""
     status: ProposalStatus = ProposalStatus.PROPOSED
     proposal_id: str = field(default_factory=new_id)
     created_at: datetime = field(default_factory=utc_now)
     decided_at: datetime | None = None
     source_memory_id: str | None = None
+    #: Set once approval turned this into a scheduled job.
+    job_id: str | None = None
 
-    def approved(self) -> Self:
-        return replace(self, status=ProposalStatus.APPROVED, decided_at=utc_now())
+    @property
+    def schedulable(self) -> bool:
+        return self.trigger_kind is TriggerKind.DAILY
+
+    def approved(self, *, job_id: str | None = None) -> Self:
+        return replace(self, status=ProposalStatus.APPROVED, decided_at=utc_now(), job_id=job_id)
 
     def rejected(self) -> Self:
         return replace(self, status=ProposalStatus.REJECTED, decided_at=utc_now())
@@ -86,6 +113,9 @@ class RoutineProposal:
         return {
             "proposal_id": self.proposal_id,
             "trigger": self.trigger,
+            "trigger_kind": str(self.trigger_kind),
+            "trigger_detail": self.trigger_detail,
+            "schedulable": self.schedulable,
             "capability": self.capability,
             "params": self.params,
             "rationale": self.rationale,
@@ -95,6 +125,7 @@ class RoutineProposal:
             "created_at": self.created_at.isoformat(),
             "decided_at": self.decided_at.isoformat() if self.decided_at else None,
             "source_memory_id": self.source_memory_id,
+            "job_id": self.job_id,
         }
 
     @classmethod
@@ -102,6 +133,9 @@ class RoutineProposal:
         return cls(
             proposal_id=data["proposal_id"],
             trigger=data["trigger"],
+            trigger_kind=TriggerKind(data.get("trigger_kind", TriggerKind.WHENEVER)),
+            trigger_detail=data.get("trigger_detail", ""),
+            job_id=data.get("job_id"),
             capability=data["capability"],
             params=data.get("params", {}),
             rationale=data["rationale"],
@@ -193,29 +227,41 @@ def observations_for_action(
     return observations
 
 
-def _describe(entry: MemoryEntry) -> tuple[str, str, str] | None:
-    """Turn a habit entry into (trigger, capability, rationale), if it is one."""
+@dataclass(frozen=True, slots=True)
+class _Described:
+    trigger: str
+    capability: str
+    rationale: str
+    kind: TriggerKind
+    detail: str = ""
+
+
+def _describe(entry: MemoryEntry) -> _Described | None:
+    """Read a habit entry's predicate back into a trigger, if it is one."""
     predicate = entry.predicate
     if predicate.startswith("repeats:"):
-        capability = predicate.removeprefix("repeats:")
-        return (
-            "whenever you would normally do it",
-            capability,
-            f"You have done this {entry.observations} times.",
+        return _Described(
+            trigger="whenever you would normally do it",
+            capability=predicate.removeprefix("repeats:"),
+            rationale=f"You have done this {entry.observations} times.",
+            kind=TriggerKind.WHENEVER,
         )
     if predicate.startswith("time_pattern:"):
-        capability = predicate.removeprefix("time_pattern:")
-        return (
-            f"daily around {entry.value}",
-            capability,
-            f"You have done this around {entry.value} {entry.observations} times.",
+        return _Described(
+            trigger=f"daily around {entry.value}",
+            capability=predicate.removeprefix("time_pattern:"),
+            rationale=f"You have done this around {entry.value} {entry.observations} times.",
+            kind=TriggerKind.DAILY,
+            detail=str(entry.value),
         )
     if predicate.startswith("follows:"):
         previous = predicate.removeprefix("follows:")
-        return (
-            f"after {previous}",
-            str(entry.value),
-            f"This followed {previous} {entry.observations} times.",
+        return _Described(
+            trigger=f"after {previous}",
+            capability=str(entry.value),
+            rationale=f"This followed {previous} {entry.observations} times.",
+            kind=TriggerKind.AFTER,
+            detail=previous,
         )
     return None
 
@@ -239,7 +285,6 @@ def propose_from(
     described = _describe(entry)
     if described is None:
         return None
-    trigger, capability, rationale = described
 
     resolved_params = params
     if resolved_params is None and entry.predicate.startswith("repeats:"):
@@ -249,10 +294,12 @@ def propose_from(
             resolved_params = {}
 
     return RoutineProposal(
-        trigger=trigger,
-        capability=capability,
+        trigger=described.trigger,
+        trigger_kind=described.kind,
+        trigger_detail=described.detail,
+        capability=described.capability,
         params=resolved_params or {},
-        rationale=rationale,
+        rationale=described.rationale,
         observations=entry.observations,
         confidence=entry.confidence,
         source_memory_id=entry.memory_id,
