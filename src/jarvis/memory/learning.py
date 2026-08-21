@@ -59,17 +59,18 @@ class TriggerKind(StrEnum):
     """What would set an approved routine off.
 
     Kept structured rather than parsed back out of the human-readable
-    `trigger` sentence. Only `DAILY` can become a scheduled job; the other two
-    describe conditions the Scheduler cannot watch for, and pretending
-    otherwise would produce jobs that never fire.
+    `trigger` sentence, because what can actually watch for a trigger differs
+    per kind and a job that could never fire would be a broken promise.
     """
 
-    #: Recurs, but not on a clock. Usable by the Planner, not the Scheduler.
+    #: Recurs, but not on a clock and not after any particular action. Usable
+    #: by the Planner when the goal comes up again; nothing can watch for it.
     WHENEVER = "whenever"
     #: Recurs around a particular hour - Blueprint 8.1's "Tagesmuster".
+    #: Watched by the Scheduler.
     DAILY = "daily"
-    #: Follows another action. Needs event-driven triggering, which the
-    #: Scheduler does not do.
+    #: Follows another action. Watched by the Trigger Watcher, which fires it
+    #: through the Scheduler when the preceding capability completes.
     AFTER = "after"
 
 
@@ -101,7 +102,12 @@ class RoutineProposal:
 
     @property
     def schedulable(self) -> bool:
-        return self.trigger_kind is TriggerKind.DAILY
+        """Whether something in the system can actually watch for this trigger.
+
+        `WHENEVER` stays false: it names no moment, so there is nothing to
+        wait on. Registering it would produce a job that never fires.
+        """
+        return self.trigger_kind in (TriggerKind.DAILY, TriggerKind.AFTER)
 
     def approved(self, *, job_id: str | None = None) -> Self:
         return replace(self, status=ProposalStatus.APPROVED, decided_at=utc_now(), job_id=job_id)

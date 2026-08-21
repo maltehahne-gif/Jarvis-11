@@ -144,6 +144,8 @@ class JobRequest(BaseModel):
     in_seconds: float | None = None
     interval_seconds: float | None = None
     daily_at: str | None = None
+    #: For `kind="after"`: the capability whose completion fires this job.
+    after_capability: str | None = None
     max_attempts: int = Field(default=3, ge=1, le=10)
 
     def to_job(self) -> ScheduledJob:
@@ -156,6 +158,11 @@ class JobRequest(BaseModel):
             if first <= utc_now():
                 first += timedelta(days=1)
 
+        if kind is JobKind.AFTER and not self.after_capability:
+            # An AFTER job with nothing to wait on could never fire, and a job
+            # that silently never fires is worse than a refused registration.
+            raise ValueError("an 'after' job needs after_capability")
+
         return ScheduledJob(
             name=self.name,
             goal=self.goal,
@@ -167,6 +174,7 @@ class JobRequest(BaseModel):
             next_run_at=first,
             interval=(timedelta(seconds=self.interval_seconds) if self.interval_seconds else None),
             daily_at=at,
+            after_capability=self.after_capability,
             max_attempts=self.max_attempts,
         )
 

@@ -37,7 +37,7 @@ from jarvis.execution.budget import BudgetTracker
 from jarvis.execution.gateway import ExecutionGateway, ExecutionOutcome, ExecutionResult
 from jarvis.intent.router import ControlAction, Intent, IntentRouter, Route
 from jarvis.memory.control import MemoryControl
-from jarvis.memory.learning import RoutineProposal
+from jarvis.memory.learning import RoutineProposal, TriggerKind
 from jarvis.memory.service import MemoryService
 from jarvis.mission.engine import MissionEngine
 from jarvis.mission.model import Mission, MissionState, TaskState
@@ -57,6 +57,7 @@ from jarvis.scheduler.jobs import (
     parse_daily_at,
 )
 from jarvis.scheduler.scheduler import Scheduler
+from jarvis.scheduler.triggers import TriggerWatcher
 from jarvis.scheduler.watchdog import Watchdog
 from jarvis.state.manager import StateManager
 from jarvis.tools.mock import MockWorld, register_mock_tools
@@ -185,6 +186,13 @@ class JarvisCore:
             max_duration=self.config.budget.max_duration,
             audit=self.audit,
         )
+        # The clock's counterpart: routines whose trigger is another action
+        # completing rather than a time arriving (Blueprint 8.3).
+        self.triggers = TriggerWatcher(
+            scheduler=self.scheduler,
+            bus=self.bus,
+            audit=self.audit,
+        )
 
         # Voice is an input surface, not an authority. A spoken command goes
         # through `handle_command` like any other, and Blueprint 7.2 keeps
@@ -217,6 +225,7 @@ class JarvisCore:
         resumed = await self.missions.resume_open_missions()
         if self.config.scheduler_enabled:
             await self.scheduler.start()
+            await self.triggers.start()
         self._started = True
         log.info("core started; %d mission(s) resumed", len(resumed))
         return resumed
@@ -225,6 +234,7 @@ class JarvisCore:
         if not self._started:
             return
         await self.voice.stop()
+        await self.triggers.stop()
         await self.scheduler.stop()
         await self.store.close()
         self._started = False
@@ -497,7 +507,7 @@ class JarvisCore:
         return await self._settle_run(mission, outcome)
 
     async def activate_routine(self, proposal: RoutineProposal) -> str | None:
-        """Turn an owner-approved routine into a scheduled job (Blueprint 8.3).
+        """Turn an owner-approved routine into a standing job (Blueprint 8.3).
 
         This is where "erst nach Freigabe werden ... Automationen permanent"
         actually becomes permanent. The job inherits no rights beyond the
@@ -505,9 +515,17 @@ class JarvisCore:
         unattended ceiling it will park for confirmation on every firing
         rather than run - approving a *pattern* is not approving unattended
         execution of a sensitive action.
+
+        Two kinds of trigger can be watched for, and they differ only in what
+        does the watching: `DAILY` waits on the Scheduler's clock, `AFTER` on
+        the Trigger Watcher's event stream. Both fire through the same
+        `Scheduler`, so both are held to the same unattended limits.
         """
         if not proposal.schedulable:
             return None
+
+        if proposal.trigger_kind is TriggerKind.AFTER:
+            return await self._activate_after_routine(proposal)
 
         at = parse_daily_at(proposal.trigger_detail or "09h")
         first_run = datetime.combine(utc_now().date(), at, tzinfo=UTC)
@@ -523,6 +541,36 @@ class JarvisCore:
                 params=dict(proposal.params),
                 daily_at=at,
                 next_run_at=first_run,
+                origin=f"routine:{proposal.proposal_id}",
+            )
+        )
+        return job.job_id
+
+    async def _activate_after_routine(self, proposal: RoutineProposal) -> str | None:
+        """Arm a routine on the completion of another capability.
+
+        Refuses if the preceding capability is not registered. An `AFTER` job
+        naming a capability that does not exist could never fire, and a job
+        that silently never fires is the broken promise this whole path exists
+        to avoid.
+        """
+        preceding = proposal.trigger_detail
+        if not preceding or not self.registry.has(preceding):
+            log.warning(
+                "cannot arm routine %s: unknown preceding capability %r",
+                proposal.proposal_id,
+                preceding,
+            )
+            return None
+
+        job = await self.scheduler.register(
+            ScheduledJob(
+                name=f"routine: {proposal.capability}",
+                goal=f"{proposal.capability} ({proposal.trigger})",
+                kind=JobKind.AFTER,
+                capability=proposal.capability,
+                params=dict(proposal.params),
+                after_capability=preceding,
                 origin=f"routine:{proposal.proposal_id}",
             )
         )

@@ -422,6 +422,11 @@ class ExecutionGateway:
                     "capability": capability.name,
                     "mission_id": context.mission_id,
                     "verification": str(report.status),
+                    # Who caused this action. The Trigger Watcher uses it to
+                    # refuse to let one routine's action set off another,
+                    # which is what keeps event-driven routines from forming
+                    # a cycle (Blueprint 7.3's "Agent-Endlosschleife").
+                    "actor": context.actor,
                     # Memory is a named Event Bus consumer (Blueprint 5.1) and
                     # needs the arguments to tell one habit from another:
                     # "Licht im Office an" is not the same routine as

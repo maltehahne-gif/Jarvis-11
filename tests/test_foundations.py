@@ -185,6 +185,35 @@ class TestAuditChain:
         ok, _ = await audit.verify_chain()
         assert not ok
 
+    async def test_concurrent_writers_do_not_fork_the_chain(self, store: SqliteStore):
+        """Two writers at once must not both chain onto the same entry.
+
+        A triggered routine writes its audit entry while the command that set
+        it off is still writing its own. Unserialised, both read the same tip
+        and the log forks - two entries claiming one predecessor - which
+        `verify_chain` reports exactly as it reports tampering. A busy system
+        would then raise a permanent false alarm, and the one signal that has
+        to mean something would stop meaning it (Blueprint 7.2).
+        """
+        audit = AuditLogger(store)
+        await asyncio.gather(
+            *(
+                audit.log(
+                    action=f"a{i}", actor="core", subject="s", decision="allow", correlation_id="c"
+                )
+                for i in range(25)
+            )
+        )
+
+        ok, broken = await audit.verify_chain()
+        assert ok, f"chain forked at {broken}"
+
+        records = await store.list_audit(limit=100)
+        assert len(records) == 25
+        # Every entry but the first is some other entry's successor, exactly once.
+        parents = [r["prev_hash"] for r in records]
+        assert len(set(parents)) == len(parents)
+
     def test_hashing_is_canonical_regardless_of_key_order(self):
         a = {"x": 1, "y": 2}
         b = {"y": 2, "x": 1}

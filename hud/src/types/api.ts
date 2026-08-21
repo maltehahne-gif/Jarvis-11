@@ -185,6 +185,8 @@ export interface ScheduledJobView {
   next_run_at: string;
   interval_seconds: number | null;
   daily_at: string | null;
+  /** For `kind: "after"`: the capability whose completion fires this job. */
+  after_capability: string | null;
   enabled: boolean;
   attempts: number;
   max_attempts: number;
@@ -205,7 +207,10 @@ export interface SchedulerSnapshot {
   total: number;
   enabled: number;
   needing_approval: number;
+  /** Enabled event-driven jobs waiting on a trigger, not on a clock. */
+  armed: number;
   max_unattended_level: string;
+  /** Earliest run among clock-scheduled jobs; null when only armed ones remain. */
   next_run_at: string | null;
   jobs: ScheduledJobView[];
 }

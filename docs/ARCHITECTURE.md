@@ -541,6 +541,82 @@ Ganzzahl des Enums. Der erste Typentwurf hatte `number` angenommen; ein
 `curl` gegen `/capabilities` und `/scheduler` zeigte den echten JSON-Shape,
 der TypeScript-Typ wurde entsprechend korrigiert.
 
+### Ereignisgetriebene Routinen (Blueprint 8.3)
+
+Die Lernschleife konnte schon immer *bemerken*, dass eine Aktion gewohnheits-
+mäßig auf eine andere folgt, und daraus einen `RoutineProposal` mit
+`AFTER`-Trigger machen. Handeln konnte sie darauf nicht: der Scheduler
+arbeitet mit einer Uhr, und keine Uhr weiß, dass gerade die vorangehende
+Aktion passiert ist. Eine freigegebene `AFTER`-Routine war damit ein
+Versprechen, das das System nicht halten konnte.
+
+`scheduler/triggers.py` schließt diese Lücke. Drei Entscheidungen tragen das
+Gewicht:
+
+**Ein Queue-Consumer, kein Inline-Handler.** `EventBus.on`-Handler laufen
+*innerhalb* von `publish`. Eine daraus gestartete Routine würde die eigene
+Aktion des Besitzers auf eine komplette Hintergrund-Mission warten lassen —
+genau der Stillstand, den Prinzip 4 (Fluid-first) verbietet. Der Watcher
+nimmt deshalb eine `subscribe()`-Queue und leert sie auf einem eigenen Task.
+Ein Test hält das fest: direkt nach `handle_command` ist das Licht noch aus,
+die Routine läuft danach.
+
+**Der Watcher entscheidet nur *wann*, nie *ob*.** Gefeuert wird über
+`Scheduler.fire_now`, also durch dieselbe Risiko-Decke, denselben Kill
+Switch, dasselbe Retry/Backoff und dasselbe Audit wie ein zeitgesteuerter
+Job. „Unattended darf nie mehr als attended" ist eine Eigenschaft davon, dass
+niemand zusieht — nicht davon, welche Art Uhr gestartet hat. Eine
+P3-Capability wird deshalb auch hier vorab abgelehnt (`REFUSED`), bleibt aber
+scharf für das nächste Mal.
+
+**Die Aktion einer Routine kann keine Routine auslösen.** Das macht Zyklen
+unmöglich statt bloß unwahrscheinlich: Routine A, die `home.set_light`
+ausführt, kann Routine B nicht wecken, die auf `home.set_light` scharf ist —
+kein Kette kann sich schließen (7.3, „Agent-Endlosschleife"). Technisch trägt
+das `TOOL_SUCCEEDED`-Event jetzt seinen `actor`, und `scheduler` ist nie ein
+Trigger. Das ist zugleich die ehrliche Lesart des Musters: gelernt wurde es,
+indem der *Besitzer* beobachtet wurde, also ist dessen Aktion der Auslöser.
+Eine tiefere Kette bräuchte echte Zykluserkennung, und nichts im Blueprint
+verlangt eine.
+
+Ein `AFTER`-Job ist nie „fällig" — `is_due()` gibt für ihn immer `False`
+zurück, und sein `next_run_at` ist ein Restfeld, keine Zeitangabe. Genau
+deshalb zählt der Scheduler-Snapshot ihn nicht mehr in `next_run_at` mit,
+sondern separat als `armed`, und das HUD zeigt „nach system.status" statt
+eines Countdowns auf einen Moment, an dem nichts passiert (7.3).
+
+`TriggerKind.WHENEVER` bleibt bewusst ohne Job: es benennt keinen Moment, auf
+den irgendetwas warten könnte.
+
+### Ein Fund aus dem Live-Test: die Audit-Kette gabelte sich
+
+Der erste Live-Durchlauf des Trigger-Pfades ließ das HUD rot melden:
+„Audit-Kette gebrochen". Kein Fehlalarm der Anzeige — die Kette *war*
+gebrochen, und zwar nicht durch Manipulation, sondern durch Nebenläufigkeit.
+
+`AuditLogger.record()` las den Tip der Kette, hashte dagegen und hängte an —
+mit `await` dazwischen. Zwei gleichzeitige Schreiber (die Mission des
+Besitzers, die noch abschloss, und die vom Watcher gestartete Routine) lasen
+denselben Tip, bevor einer von beiden schrieb. Ergebnis: zwei Einträge mit
+demselben Vorgänger, also eine Gabel.
+
+Das ist gravierender als es klingt. `verify_chain()` meldet eine Gabel mit
+demselben Signal wie eine echte Manipulation. Ein beschäftigtes System hätte
+also dauerhaft Alarm geschlagen — und genau der eine Alarm, der etwas
+bedeuten muss, hätte aufgehört, etwas zu bedeuten (Blueprint 7.2). Die
+Tamper-Evidenz wäre wertlos geworden.
+
+Der Fix serialisiert Lesen, Hashen, Anhängen und Tip-Aktualisierung über
+einen `asyncio.Lock`. Der Regressionstest schreibt 25 Einträge per
+`asyncio.gather` und prüft, dass kein `prev_hash` zweimal vorkommt; ohne den
+Lock schlägt er zuverlässig fehl.
+
+Der Bug war älter als die Trigger — auch der Scheduler-Loop konnte
+parallel zu einem HTTP-Kommando schreiben. Der ereignisgetriebene Pfad hat
+ihn nur von „gelegentlich möglich" zu „bei jedem Durchlauf" gemacht und
+damit sichtbar. Das ist das Argument für Live-Tests neben Unit-Tests: die
+Unit-Tests waren grün, weil sie nichts nebenläufig taten.
+
 ## 11. Was als Nächstes ansteht
 
 Nach Prinzip 5 („build core before spectacle") und in dieser Reihenfolge:
@@ -552,7 +628,8 @@ Nach Prinzip 5 („build core before spectacle") und in dieser Reihenfolge:
    Prototyping-Pfad; iOS braucht Push-to-talk als Fallback.
 3. **Weitere HUD-Modi** — News (3D-Globus), Coding (Monaco), Smart Home
    (Digital Twin), Research.
-4. **Event-getriggerte Routinen** — `AFTER`-Trigger brauchen einen
-   Event-Watcher neben dem uhrbasierten Scheduler.
+4. **Weitere Trigger-Quellen** — der Trigger Watcher hört bisher nur auf
+   abgeschlossene Aktionen. Anwesenheit, Gerätezustand oder eingehende
+   Nachrichten wären dieselbe Mechanik mit einem anderen Event-Filter.
 5. **Vector Search / pgvector**, sobald über Embeddings entschieden ist.
 6. **Tauri-Shell**, sobald eine Umgebung mit GTK/webkit2gtk verfügbar ist.

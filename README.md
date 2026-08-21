@@ -36,7 +36,7 @@ getroffene Entscheidungen: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -e ".[dev]"
 
-.venv/bin/python -m pytest          # 413 Tests
+.venv/bin/python -m pytest          # 441 Tests
 .venv/bin/python -m jarvis          # http://127.0.0.1:8765
 ```
 

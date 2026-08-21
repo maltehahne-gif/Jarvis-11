@@ -43,7 +43,7 @@ from jarvis.events.envelope import Event, Priority
 from jarvis.permission.engine import PermissionEngine
 from jarvis.permission.levels import PermissionLevel
 from jarvis.persistence.ports import StateStore
-from jarvis.scheduler.jobs import JobOutcome, JobResult, ScheduledJob
+from jarvis.scheduler.jobs import JobKind, JobOutcome, JobResult, ScheduledJob
 
 log = logging.getLogger(__name__)
 
@@ -223,6 +223,38 @@ class Scheduler:
             results.append(await self._fire(job, moment))
         return results
 
+    async def fire_now(self, job_id: str, *, now: datetime | None = None) -> JobResult | None:
+        """Fire one job immediately, outside the clock.
+
+        This is the entry point for event-driven triggers (Blueprint 8.3's
+        "after" routines): the Trigger Watcher decides *when*, and everything
+        about *whether and how* stays here. A triggered job goes through the
+        same unattended risk ceiling, the same kill switch, the same
+        retry/backoff and the same audit trail as a timed one - because
+        "unattended execution may never do more than attended execution" is a
+        property of nobody watching, not of what kind of clock started it.
+        """
+        from jarvis.events.envelope import utc_now
+
+        job = self._jobs.get(job_id)
+        if job is None or not job.enabled:
+            return None
+
+        if self._permissions.kill_switch_engaged:
+            # "Jarvis, stop everything" (7.2) covers work about to start, and
+            # a trigger arriving mid-stop is exactly that case.
+            return None
+
+        return await self._fire(job, now or utc_now())
+
+    def armed_for(self, capability: str) -> list[ScheduledJob]:
+        """Enabled `AFTER` jobs waiting on `capability` to complete."""
+        return [
+            job
+            for job in self.jobs()
+            if job.enabled and job.kind is JobKind.AFTER and job.after_capability == capability
+        ]
+
     async def _fire(self, job: ScheduledJob, now: datetime) -> JobResult:
         await self._bus.publish(
             Event(
@@ -390,13 +422,18 @@ class Scheduler:
 
     def snapshot(self) -> dict[str, Any]:
         jobs = self.jobs()
+        # Only clock-scheduled jobs have a next run. An AFTER job's
+        # `next_run_at` is a leftover field, not a time anything will happen,
+        # so reporting it here would tell the HUD something untrue.
+        timed = [j for j in jobs if j.enabled and j.kind is not JobKind.AFTER]
         return {
             "running": self._loop is not None,
             "total": len(jobs),
             "enabled": sum(1 for j in jobs if j.enabled),
             "needing_approval": sum(1 for j in jobs if self.needs_approval(j)),
+            "armed": sum(1 for j in jobs if j.enabled and j.kind is JobKind.AFTER),
             "max_unattended_level": self._max_unattended_level.code,
-            "next_run_at": jobs[0].next_run_at.isoformat() if jobs else None,
+            "next_run_at": timed[0].next_run_at.isoformat() if timed else None,
             "jobs": [
                 {**j.to_dict(), "needs_approval_each_run": self.needs_approval(j)} for j in jobs
             ],

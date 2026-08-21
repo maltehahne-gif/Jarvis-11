@@ -17,6 +17,7 @@ are the record of consequential decisions and are never dropped.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -77,6 +78,17 @@ class AuditLogger:
     def __init__(self, store: AuditStore) -> None:
         self._store = store
         self._tip: str | None = None
+        # Reading the tip, hashing against it and appending must be one
+        # indivisible step. Without the lock two concurrent writers - a
+        # triggered routine and the command that set it off, a scheduled job
+        # and an HTTP request - both read the same tip, both chain onto it,
+        # and the log forks: two entries claiming the same predecessor.
+        #
+        # That is worse than it sounds. `verify_chain` would report the fork
+        # as a break, which is the same signal tampering produces, so a busy
+        # system would raise a permanent false alarm and the one alarm that
+        # has to mean something would stop meaning it (Blueprint 7.2).
+        self._lock = asyncio.Lock()
 
     async def _current_tip(self) -> str:
         if self._tip is None:
@@ -85,13 +97,14 @@ class AuditLogger:
 
     async def record(self, entry: AuditEntry) -> dict[str, Any]:
         """Commit one entry. Returns the stored record including its hashes."""
-        prev_hash = await self._current_tip()
-        body = entry.body()
-        entry_hash = compute_hash(body, prev_hash)
-        record = {**body, "prev_hash": prev_hash, "entry_hash": entry_hash}
-        await self._store.append_audit(record)
-        self._tip = entry_hash
-        return record
+        async with self._lock:
+            prev_hash = await self._current_tip()
+            body = entry.body()
+            entry_hash = compute_hash(body, prev_hash)
+            record = {**body, "prev_hash": prev_hash, "entry_hash": entry_hash}
+            await self._store.append_audit(record)
+            self._tip = entry_hash
+            return record
 
     async def log(
         self,

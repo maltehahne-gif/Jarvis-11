@@ -282,10 +282,10 @@ class MemoryService:
         it the next time the goal comes up; and, when its trigger is one the
         Scheduler can actually watch for, it is registered as a job.
 
-        A `WHENEVER` or `AFTER` trigger gets memory but no job. The Scheduler
-        works from a clock, so a routine keyed to "after you check the system
-        status" has nothing for it to wait on - registering it would create a
-        job that never fires and a promise that is never kept.
+        A `WHENEVER` trigger gets memory but no job: it names no moment, so
+        nothing can wait on it, and registering it would create a job that
+        never fires and a promise that is never kept. `DAILY` goes to the
+        Scheduler's clock and `AFTER` to the Trigger Watcher's event stream.
         """
         proposal = self._proposals.get(proposal_id)
         if proposal is None:

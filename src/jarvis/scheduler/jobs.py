@@ -33,6 +33,11 @@ class JobKind(StrEnum):
     ONCE = "once"
     INTERVAL = "interval"
     DAILY = "daily"
+    #: Fires when another capability completes, not on a clock (Blueprint
+    #: 8.3's "after" trigger). The clock never makes one of these due; the
+    #: Trigger Watcher fires it directly. `next_run_at` is therefore not a
+    #: schedule for an AFTER job and must not be shown as one.
+    AFTER = "after"
 
 
 class JobOutcome(StrEnum):
@@ -77,6 +82,8 @@ class ScheduledJob:
     next_run_at: datetime = field(default_factory=utc_now)
     interval: timedelta | None = None
     daily_at: time | None = None
+    #: For `JobKind.AFTER`: the capability whose completion arms this job.
+    after_capability: str | None = None
 
     enabled: bool = True
     attempts: int = 0
@@ -96,12 +103,23 @@ class ScheduledJob:
     # -- scheduling ---------------------------------------------------------
 
     def is_due(self, now: datetime | None = None) -> bool:
+        # An event-driven job is never due by the clock. Letting the poll loop
+        # pick one up would fire it at an arbitrary moment that has nothing to
+        # do with its trigger - the opposite of what "after X" promises.
+        if self.kind is JobKind.AFTER:
+            return False
         return self.enabled and (now or utc_now()) >= self.next_run_at
 
     def next_occurrence(self, after: datetime) -> datetime | None:
         """When this job should run again, or `None` if it is finished."""
         if self.kind is JobKind.ONCE:
             return None
+        if self.kind is JobKind.AFTER:
+            # Not "finished" and not scheduled either: it stays armed for the
+            # next occurrence of its trigger. Returning a non-None value is
+            # what keeps `succeeded()` and `parked()` from disabling it, and
+            # the value itself is never read, because `is_due` ignores it.
+            return self.next_run_at
         if self.kind is JobKind.INTERVAL:
             interval = self.interval or timedelta(hours=1)
             # Skip past any missed slots rather than firing a burst to catch
@@ -195,6 +213,7 @@ class ScheduledJob:
             "next_run_at": self.next_run_at.isoformat(),
             "interval_seconds": self.interval.total_seconds() if self.interval else None,
             "daily_at": self.daily_at.isoformat() if self.daily_at else None,
+            "after_capability": self.after_capability,
             "enabled": self.enabled,
             "attempts": self.attempts,
             "max_attempts": self.max_attempts,
@@ -226,6 +245,7 @@ class ScheduledJob:
                 else None
             ),
             daily_at=time.fromisoformat(data["daily_at"]) if data.get("daily_at") else None,
+            after_capability=data.get("after_capability"),
             enabled=data.get("enabled", True),
             attempts=data.get("attempts", 0),
             max_attempts=data.get("max_attempts", DEFAULT_MAX_ATTEMPTS),
